@@ -128,11 +128,13 @@ The logo preview itself is the rotation pad.
 
 When one or more cover layers are selected:
 
-- Mouse drag or one-finger horizontal drag changes pitch, spinning on a vertical axis.
-- Mouse drag or one-finger vertical drag changes roll, rolling toward or away from the viewer.
-- Two-finger twist changes yaw, rotating on an axis orthogonal to the screen.
-- On desktop, `Shift` plus drag changes yaw.
-- Gesture direction is screen-aligned: dragging left pitches left, dragging right pitches right, dragging down rolls down, dragging up rolls up, and clockwise two-finger twist yaws clockwise.
+- Mouse drag or one-finger horizontal drag rotates only around the screen y-axis.
+- Mouse drag or one-finger vertical drag rotates only around the screen x-axis.
+- A mixed horizontal and vertical drag applies one incremental screen-axis rotation in the screen x/y plane; it must not apply ordered x-then-y or y-then-x Euler updates.
+- Two-finger twist rotates only around the screen z-axis.
+- On desktop, `Shift` plus a circular drag around the logo center rotates only around the screen z-axis.
+- Gesture direction is screen-aligned: dragging left rotates clockwise around the y-axis, dragging right rotates counterclockwise around the y-axis, dragging down moves the cover top-to-bottom around the x-axis, dragging up moves the cover bottom-to-top around the x-axis, and clockwise twist rotates clockwise around the z-axis.
+- Cover orientation is stored as a rotation matrix. Interactive gestures pre-multiply an incremental screen-axis rotation onto the current matrix and must not be represented as mutable `roll`, `pitch`, and `yaw` fields.
 
 When no cover layers are selected:
 
@@ -162,11 +164,13 @@ def rotation_matrix(roll=0, pitch=0, yaw=0):
     return Rz @ Ry @ Rx
 ```
 
+The Python `rotation_matrix` above is only a reference for the original static seam rendering math and legacy persisted-state migration. The interactive app must store composed cover orientation as a matrix and apply screen-axis incremental rotations to that matrix.
+
 Rendering expectations:
 
 - Use the seam curve to define the cover half.
 - Use stereographic projection equivalent to `x / (1 + z), y / (1 + z)` for inside/outside testing.
-- Rotate the seam using roll, pitch, and yaw.
+- Rotate the seam using each cover's stored rotation matrix.
 - Only draw portions visible from the front 2D snapshot.
 - Build filled visible polygons using front-facing seam arcs and visible silhouette arcs.
 - In the rare case where the entire visible ball is one piece, draw the full circle.

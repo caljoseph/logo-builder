@@ -1,4 +1,5 @@
 import type { CoverLayer, LogoState } from "./types";
+import { identityRotation, legacyEulerToMatrix, normalizeRotation, type Matrix3 } from "./rotation";
 
 const STORAGE_KEY = "logoBuilder.state.v1";
 
@@ -7,9 +8,7 @@ export function createCover(overrides: Partial<CoverLayer> = {}): CoverLayer {
     id: crypto.randomUUID(),
     color: "#000000",
     alpha: 1,
-    roll: 0,
-    pitch: 0,
-    yaw: 0,
+    rotation: identityRotation(),
     selected: false,
     ...overrides,
   };
@@ -36,20 +35,39 @@ function normalizeAngle(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function isMatrix3(value: unknown): value is Matrix3 {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every(
+      (row) =>
+        Array.isArray(row) &&
+        row.length === 3 &&
+        row.every((entry) => typeof entry === "number" && Number.isFinite(entry)),
+    )
+  );
+}
+
 function normalizeCover(value: unknown): CoverLayer | null {
   if (!value || typeof value !== "object") {
     return null;
   }
 
   const candidate = value as Partial<CoverLayer>;
+  const legacyCandidate = value as { roll?: unknown; pitch?: unknown; yaw?: unknown };
+  const rotation = isMatrix3(candidate.rotation)
+    ? normalizeRotation(candidate.rotation)
+    : legacyEulerToMatrix(
+        normalizeAngle(legacyCandidate.roll),
+        normalizeAngle(legacyCandidate.pitch),
+        normalizeAngle(legacyCandidate.yaw),
+      );
 
   return createCover({
     id: typeof candidate.id === "string" && candidate.id.length > 0 ? candidate.id : crypto.randomUUID(),
     color: normalizeColor(candidate.color, "#000000"),
     alpha: clampAlpha(candidate.alpha, 1),
-    roll: normalizeAngle(candidate.roll),
-    pitch: normalizeAngle(candidate.pitch),
-    yaw: normalizeAngle(candidate.yaw),
+    rotation,
     selected: candidate.selected === true,
   });
 }

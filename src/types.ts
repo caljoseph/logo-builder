@@ -1,3 +1,5 @@
+import type { Matrix3 } from "./rotation";
+
 export type SphereLayer = {
   color: string;
   alpha: number;
@@ -7,9 +9,7 @@ export type CoverLayer = {
   id: string;
   color: string;
   alpha: number;
-  roll: number;
-  pitch: number;
-  yaw: number;
+  rotation: Matrix3;
   selected: boolean;
 };
 

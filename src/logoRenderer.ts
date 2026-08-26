@@ -1,8 +1,7 @@
 import type { CoverLayer, LogoState } from "./types";
+import { multiplyMatrixVector, transpose, type Matrix3, type Vec3 } from "./rotation";
 
-type Vec3 = [number, number, number];
 type Vec2 = [number, number];
-type Matrix3 = [Vec3, Vec3, Vec3];
 
 type Edge = {
   a: number;
@@ -104,7 +103,7 @@ function drawCover(
     return;
   }
 
-  const rotation = rotationMatrix(cover.roll, cover.pitch, cover.yaw);
+  const rotation = cover.rotation;
   const rotated = seamPoints.map((point) => multiplyMatrixVector(rotation, point));
   const polygons = buildVisibleCoverPolygons(rotated, rotation);
 
@@ -318,51 +317,6 @@ function drawCircle(
   context.restore();
 }
 
-function rotationMatrix(rollDeg: number, pitchDeg: number, yawDeg: number): Matrix3 {
-  const roll = degreesToRadians(rollDeg);
-  const pitch = degreesToRadians(pitchDeg);
-  const yaw = degreesToRadians(yawDeg);
-  const rz: Matrix3 = [
-    [Math.cos(yaw), -Math.sin(yaw), 0],
-    [Math.sin(yaw), Math.cos(yaw), 0],
-    [0, 0, 1],
-  ];
-  const ry: Matrix3 = [
-    [Math.cos(pitch), 0, Math.sin(pitch)],
-    [0, 1, 0],
-    [-Math.sin(pitch), 0, Math.cos(pitch)],
-  ];
-  const rx: Matrix3 = [
-    [1, 0, 0],
-    [0, Math.cos(roll), -Math.sin(roll)],
-    [0, Math.sin(roll), Math.cos(roll)],
-  ];
-
-  return multiplyMatrices(multiplyMatrices(rz, ry), rx);
-}
-
-function multiplyMatrices(a: Matrix3, b: Matrix3): Matrix3 {
-  return a.map((row) =>
-    b[0].map((_, column) => row[0] * b[0][column] + row[1] * b[1][column] + row[2] * b[2][column]),
-  ) as Matrix3;
-}
-
-function multiplyMatrixVector(matrix: Matrix3, vector: Vec3): Vec3 {
-  return [
-    matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
-    matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
-    matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2],
-  ];
-}
-
-function transpose(matrix: Matrix3): Matrix3 {
-  return [
-    [matrix[0][0], matrix[1][0], matrix[2][0]],
-    [matrix[0][1], matrix[1][1], matrix[2][1]],
-    [matrix[0][2], matrix[1][2], matrix[2][2]],
-  ];
-}
-
 function stereographicProject(point: Vec3): Vec2 {
   const denominator = 1 + point[2];
   return [point[0] / denominator, point[1] / denominator];
@@ -395,8 +349,4 @@ function colorWithAlpha(hex: string, alpha: number): string {
 
 function positiveAngle(angle: number): number {
   return ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-}
-
-function degreesToRadians(degrees: number): number {
-  return (degrees * Math.PI) / 180;
 }

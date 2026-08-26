@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 
 const baseUrl = "http://127.0.0.1:5174/";
+const DRAG_DEGREES_PER_PIXEL = 0.45;
 const outputDir = new URL("../verification-output/", import.meta.url);
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const chromePaths = [
@@ -54,6 +55,85 @@ function viteCommand() {
 
 function outputPath(name) {
   return fileURLToPath(new URL(name, outputDir));
+}
+
+function identityRotation() {
+  return [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+}
+
+function screenAxisRotation({ xDegrees = 0, yDegrees = 0, zDegrees = 0 }) {
+  const angleDegrees = Math.hypot(xDegrees, yDegrees, zDegrees);
+
+  if (angleDegrees === 0) {
+    return identityRotation();
+  }
+
+  const x = xDegrees / angleDegrees;
+  const y = yDegrees / angleDegrees;
+  const z = zDegrees / angleDegrees;
+  const angle = (angleDegrees * Math.PI) / 180;
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  const oneMinusCosine = 1 - cosine;
+
+  return [
+    [
+      cosine + x * x * oneMinusCosine,
+      x * y * oneMinusCosine - z * sine,
+      x * z * oneMinusCosine + y * sine,
+    ],
+    [
+      y * x * oneMinusCosine + z * sine,
+      cosine + y * y * oneMinusCosine,
+      y * z * oneMinusCosine - x * sine,
+    ],
+    [
+      z * x * oneMinusCosine - y * sine,
+      z * y * oneMinusCosine + x * sine,
+      cosine + z * z * oneMinusCosine,
+    ],
+  ];
+}
+
+function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0) {
+  const roll = (rollDeg * Math.PI) / 180;
+  const pitch = (pitchDeg * Math.PI) / 180;
+  const yaw = (yawDeg * Math.PI) / 180;
+  const rz = [
+    [Math.cos(yaw), -Math.sin(yaw), 0],
+    [Math.sin(yaw), Math.cos(yaw), 0],
+    [0, 0, 1],
+  ];
+  const ry = [
+    [Math.cos(pitch), 0, Math.sin(pitch)],
+    [0, 1, 0],
+    [-Math.sin(pitch), 0, Math.cos(pitch)],
+  ];
+  const rx = [
+    [1, 0, 0],
+    [0, Math.cos(roll), -Math.sin(roll)],
+    [0, Math.sin(roll), Math.cos(roll)],
+  ];
+
+  return multiplyMatrices(multiplyMatrices(rz, ry), rx);
+}
+
+function multiplyMatrices(a, b) {
+  return a.map((row) =>
+    b[0].map((_, column) => row[0] * b[0][column] + row[1] * b[1][column] + row[2] * b[2][column]),
+  );
+}
+
+function maxMatrixDifference(a, b) {
+  return Math.max(...a.flatMap((row, rowIndex) => row.map((value, column) => Math.abs(value - b[rowIndex][column]))));
+}
+
+function assertMatrixClose(actual, expected, message) {
+  assert(maxMatrixDifference(actual, expected) < 0.000_001, message);
 }
 
 async function waitForServer(processHandle) {
@@ -202,8 +282,8 @@ async function canvasStats(page) {
 async function dragLogo(page, options = {}) {
   const box = await page.locator("[data-logo-canvas]").boundingBox();
   assert(box, "Logo canvas has a bounding box.");
-  const startX = box.x + box.width / 2;
-  const startY = box.y + box.height / 2;
+  const startX = box.x + box.width / 2 + (options.startOffsetX ?? 0);
+  const startY = box.y + box.height / 2 + (options.startOffsetY ?? 0);
 
   if (options.shift) {
     await page.keyboard.down("Shift");
@@ -219,19 +299,46 @@ async function dragLogo(page, options = {}) {
   }
 }
 
-async function coverAngles(page) {
+async function coverRotations(page) {
   return page.evaluate(() => {
     const raw = localStorage.getItem("logoBuilder.state.v1");
     if (!raw) {
       throw new Error("Logo state was not persisted.");
     }
 
-    return JSON.parse(raw).covers.map((cover) => ({
-      roll: cover.roll,
-      pitch: cover.pitch,
-      yaw: cover.yaw,
-    }));
+    return JSON.parse(raw).covers.map((cover) => cover.rotation);
   });
+}
+
+async function setCoverRotations(page, rotation) {
+  await page.evaluate((nextRotation) => {
+    const raw = localStorage.getItem("logoBuilder.state.v1");
+    if (!raw) {
+      throw new Error("Logo state was not persisted.");
+    }
+
+    const state = JSON.parse(raw);
+    state.covers = state.covers.map((cover) => ({ ...cover, rotation: nextRotation }));
+    localStorage.setItem("logoBuilder.state.v1", JSON.stringify(state));
+  }, rotation);
+}
+
+async function verifyLegacyMigration(page) {
+  await page.goto(baseUrl);
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "logoBuilder.state.v1",
+      JSON.stringify({
+        base: { color: "#ffffff", alpha: 1 },
+        covers: [{ id: "legacy-cover", color: "#000000", alpha: 1, roll: 12, pitch: 23, yaw: 34, selected: true }],
+      }),
+    );
+  });
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+
+  const [rotation] = await coverRotations(page);
+  assertMatrixClose(rotation, legacyEulerToMatrix(12, 23, 34), "Legacy roll/pitch/yaw state migrates to a rotation matrix.");
 }
 
 async function longPress(locator, page) {
@@ -246,6 +353,7 @@ async function longPress(locator, page) {
 async function runMainFlowChecks(page, screenshotPrefix) {
   logStep(`${screenshotPrefix}: load app`);
   page.setDefaultTimeout(15_000);
+  await verifyLegacyMigration(page);
   await page.goto(baseUrl);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
@@ -271,17 +379,56 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.reload();
   await page.waitForSelector("[data-logo-canvas]");
   await page.getByRole("button", { name: "Add cover" }).click();
+
   await dragLogo(page, { dx: 100, dy: 0 });
-  let angles = await coverAngles(page);
-  assert(angles.every((cover) => cover.pitch > 300 && cover.roll === 0), "Dragging right pitches covers right.");
+  let rotations = await coverRotations(page);
+  let expectedRotation = screenAxisRotation({ yDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
+  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging right applies only screen y-axis rotation."));
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await page.getByRole("button", { name: "Add cover" }).click();
 
   await dragLogo(page, { dx: 0, dy: 100 });
-  angles = await coverAngles(page);
-  assert(angles.every((cover) => cover.roll > 300), "Dragging down rolls covers down.");
+  rotations = await coverRotations(page);
+  expectedRotation = screenAxisRotation({ xDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
+  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging down applies only screen x-axis rotation."));
 
-  await dragLogo(page, { dx: 100, dy: 0, shift: true });
-  angles = await coverAngles(page);
-  assert(angles.every((cover) => cover.yaw > 300), "Shift-dragging right yaws covers right.");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await page.getByRole("button", { name: "Add cover" }).click();
+
+  await dragLogo(page, { startOffsetY: -100, dx: 100, dy: 100, shift: true });
+  rotations = await coverRotations(page);
+  expectedRotation = screenAxisRotation({ zDegrees: -90 });
+  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Clockwise Shift-drag applies only screen z-axis rotation."));
+
+  const preRotated = screenAxisRotation({ xDegrees: 28, yDegrees: -17, zDegrees: 42 });
+  await setCoverRotations(page, preRotated);
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await dragLogo(page, { dx: 80, dy: 0 });
+  rotations = await coverRotations(page);
+  expectedRotation = multiplyMatrices(screenAxisRotation({ yDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
+  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Horizontal drag pre-multiplies screen y-axis rotation."));
+
+  await setCoverRotations(page, preRotated);
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await dragLogo(page, { dx: 0, dy: 80 });
+  rotations = await coverRotations(page);
+  expectedRotation = multiplyMatrices(screenAxisRotation({ xDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
+  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Vertical drag pre-multiplies screen x-axis rotation."));
+
+  await setCoverRotations(page, preRotated);
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await dragLogo(page, { startOffsetY: -100, dx: 100, dy: 100, shift: true });
+  rotations = await coverRotations(page);
+  expectedRotation = multiplyMatrices(screenAxisRotation({ zDegrees: -90 }), preRotated);
+  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Clockwise Shift-drag pre-multiplies screen z-axis rotation."));
 
   await page.getByRole("button", { name: "Base sphere" }).click();
   assert((await page.locator(".layer-swatch.selected").count()) === 0, "Base sphere clears selection when every cover is selected.");

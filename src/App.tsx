@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createCover, loadLogoState, saveLogoState } from "./storage";
 import { exportLogoPng, renderLogoToCanvas } from "./logoRenderer";
+import { multiplyMatrices, normalizeRotation, screenAxisRotation, type Matrix3 } from "./rotation";
 import type { CoverLayer, EditableLayer, LogoState } from "./types";
 
 const LONG_PRESS_MS = 480;
@@ -180,7 +181,7 @@ export default function App() {
     setEditingLayer(null);
   }
 
-  function rotateSelected(delta: Partial<Pick<CoverLayer, "roll" | "pitch" | "yaw">>) {
+  function rotateSelected(deltaRotation: Matrix3) {
     setLogoState((current) => {
       if (!current.covers.some((cover) => cover.selected)) {
         return current;
@@ -192,9 +193,7 @@ export default function App() {
           cover.selected
             ? {
                 ...cover,
-                roll: normalizeAngle(cover.roll + (delta.roll ?? 0)),
-                pitch: normalizeAngle(cover.pitch + (delta.pitch ?? 0)),
-                yaw: normalizeAngle(cover.yaw + (delta.yaw ?? 0)),
+                rotation: normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation)),
               }
             : cover,
         ),
@@ -238,7 +237,7 @@ export default function App() {
       const nextAngle = twistAngle(activePointers);
       const previousAngle = lastTwistAngleRef.current ?? nextAngle;
       lastTwistAngleRef.current = nextAngle;
-      rotateSelected({ yaw: radiansToDegrees(previousAngle - nextAngle) });
+      rotateSelected(screenAxisRotation({ zDegrees: -radiansToDegrees(shortestAngleDelta(previousAngle, nextAngle)) }));
       return;
     }
 
@@ -246,13 +245,14 @@ export default function App() {
     const deltaY = event.clientY - pointer.y;
 
     if (event.shiftKey) {
-      rotateSelected({ yaw: -deltaX * DRAG_DEGREES_PER_PIXEL });
+      const previousAngle = pointerAngleAroundElement(event.currentTarget, pointer);
+      const nextAngle = pointerAngleAroundElement(event.currentTarget, { x: event.clientX, y: event.clientY });
+      rotateSelected(screenAxisRotation({ zDegrees: -radiansToDegrees(shortestAngleDelta(previousAngle, nextAngle)) }));
     } else {
-      // Screen-space drags should move the apparent cover in the same direction as the pointer.
-      rotateSelected({
-        pitch: -deltaX * DRAG_DEGREES_PER_PIXEL,
-        roll: -deltaY * DRAG_DEGREES_PER_PIXEL,
-      });
+      rotateSelected(screenAxisRotation({
+        xDegrees: deltaY * DRAG_DEGREES_PER_PIXEL,
+        yDegrees: deltaX * DRAG_DEGREES_PER_PIXEL,
+      }));
     }
   }
 
@@ -474,13 +474,18 @@ function LayerSwatch({
   );
 }
 
-function normalizeAngle(angle: number): number {
-  return ((angle % 360) + 360) % 360;
-}
-
 function twistAngle(points: PointerPoint[]): number {
   const [first, second] = points;
   return Math.atan2(second.y - first.y, second.x - first.x);
+}
+
+function pointerAngleAroundElement(element: HTMLElement, point: Pick<PointerPoint, "x" | "y">): number {
+  const rect = element.getBoundingClientRect();
+  return Math.atan2(point.y - (rect.top + rect.height / 2), point.x - (rect.left + rect.width / 2));
+}
+
+function shortestAngleDelta(previous: number, next: number): number {
+  return Math.atan2(Math.sin(next - previous), Math.cos(next - previous));
 }
 
 function radiansToDegrees(radians: number): number {
