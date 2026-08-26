@@ -256,10 +256,11 @@ The deployment workflow should:
 - Install Playwright Chromium for screenshot verification.
 - Build the app with `npm run build`.
 - Verify the app with `npm run verify:ui`.
+- Include the root `.nojekyll` marker so GitHub Pages serves the built static assets without Jekyll processing.
 - Upload the generated `dist/` directory as the GitHub Pages artifact.
 - Deploy that artifact to GitHub Pages.
 
-The published app URL is expected to be `https://walkofflabs.github.io/logo/`.
+The published app URL is expected to be `https://tristanmott1.github.io/logo/`.
 
 ## Documentation Change Rule
 
