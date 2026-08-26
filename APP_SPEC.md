@@ -116,6 +116,8 @@ A cover edit modal contains:
 - A trash icon button for deleting the cover.
 - A small icon-only `X` close button.
 
+The color selector's visible swatch reflects both the current color and current alpha over the app's white background.
+
 The color modal has no visible text.
 
 Clicking outside a modal does not dismiss it. The `X` must be clicked or tapped to close.

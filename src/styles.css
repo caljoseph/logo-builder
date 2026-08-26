@@ -221,14 +221,39 @@ input:focus-visible {
   box-shadow: none;
 }
 
-.color-input {
+.color-input-shell {
+  position: relative;
   width: 82px;
   height: 82px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 0;
   overflow: hidden;
-  background: transparent;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.color-input-shell::before {
+  position: absolute;
+  inset: 0;
+  background: var(--edit-color);
+  content: "";
+  opacity: var(--edit-alpha);
+}
+
+.color-input-shell:focus-within {
+  outline: 2px solid var(--ink);
+  outline-offset: 4px;
+}
+
+.color-input {
+  position: absolute;
+  inset: 0;
+  width: 82px;
+  height: 82px;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
 }
 
 .color-input::-webkit-color-swatch-wrapper {

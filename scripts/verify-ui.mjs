@@ -301,6 +301,11 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await longPress(page.getByRole("button", { name: "Cover 2" }), page);
   await page.waitForSelector(".color-modal");
   assert((await visibleText(page)).length === 0, "Color modal has no visible text.");
+  await page.getByRole("slider", { name: "Alpha" }).fill("0.42");
+  const previewAlpha = await page.locator(".color-input-shell").evaluate((element) =>
+    Number(window.getComputedStyle(element).getPropertyValue("--edit-alpha")),
+  );
+  assert(Math.abs(previewAlpha - 0.42) < 0.001, "Color modal preview reflects alpha changes.");
   await page.screenshot({ path: outputPath(`${screenshotPrefix}-color-modal.png`), fullPage: true });
   await page.getByRole("button", { name: "Close" }).click();
 

@@ -333,13 +333,18 @@ export default function App() {
             <button className="modal-close icon-button" type="button" onClick={() => setEditingLayer(null)} aria-label="Close">
               <X aria-hidden="true" size={19} strokeWidth={2.5} />
             </button>
-            <input
-              className="color-input"
-              type="color"
-              value={editColor}
-              onChange={(event) => updateEditingColor(event.target.value)}
-              aria-label="Color"
-            />
+            <label
+              className="color-input-shell"
+              style={{ "--edit-color": editColor, "--edit-alpha": editAlpha } as CSSProperties}
+            >
+              <input
+                className="color-input"
+                type="color"
+                value={editColor}
+                onChange={(event) => updateEditingColor(event.target.value)}
+                aria-label="Color"
+              />
+            </label>
             <input
               className="alpha-input"
               type="range"
