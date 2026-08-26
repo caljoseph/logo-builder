@@ -15,4 +15,4 @@ npm run build
 npm run verify:ui
 ```
 
-GitHub Pages deployment is handled by `.github/workflows/publish-pages.yml` from `main`.
+GitHub Pages deployment is handled by `.github/workflows/deploy.yml` from `main`.

@@ -248,17 +248,17 @@ Verification output screenshots are generated artifacts and are not the source o
 
 ## Deployment
 
-The app is deployed to GitHub Pages from `main` through `.github/workflows/publish-pages.yml`.
+The app is deployed to GitHub Pages from `main` through `.github/workflows/deploy.yml`.
 
 The deployment workflow should:
 
 - Install dependencies with `npm ci`.
-- Install Playwright Chromium for screenshot verification.
 - Build the app with `npm run build`.
-- Verify the app with `npm run verify:ui`.
 - Include the root `.nojekyll` marker so GitHub Pages serves the built static assets without Jekyll processing.
 - Upload the generated `dist/` directory as the GitHub Pages artifact.
 - Deploy that artifact to GitHub Pages.
+
+Screenshot verification is a local preflight and should not block the final GitHub Pages publish workflow.
 
 The published app URL is expected to be `https://tristanmott1.github.io/logo/`.
 

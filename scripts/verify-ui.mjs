@@ -19,6 +19,25 @@ function assert(condition, message) {
   }
 }
 
+function logStep(message) {
+  console.log(`[verify-ui] ${message}`);
+}
+
+async function withTimeout(label, timeoutMs, action) {
+  let timeout;
+
+  try {
+    return await Promise.race([
+      action(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function npmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
@@ -75,7 +94,24 @@ async function stopServer(processHandle) {
     return;
   }
 
-  processHandle.kill("SIGTERM");
+  try {
+    process.kill(-processHandle.pid, "SIGTERM");
+  } catch {
+    processHandle.kill("SIGTERM");
+  }
+
+  await Promise.race([
+    once(processHandle, "exit"),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ]);
+
+  if (processHandle.exitCode === null) {
+    try {
+      process.kill(-processHandle.pid, "SIGKILL");
+    } catch {
+      processHandle.kill("SIGKILL");
+    }
+  }
 }
 
 async function launchBrowser() {
@@ -185,6 +221,8 @@ async function longPress(locator, page) {
 }
 
 async function runMainFlowChecks(page, screenshotPrefix) {
+  logStep(`${screenshotPrefix}: load app`);
+  page.setDefaultTimeout(15_000);
   await page.goto(baseUrl);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
@@ -197,6 +235,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   assert(initial.width > 0 && initial.height > 0, "Canvas has a rendered pixel buffer.");
   assert(initial.darkPixels > 1000, "Initial logo render contains visible cover pixels.");
 
+  logStep(`${screenshotPrefix}: add and rotate covers`);
   await page.getByRole("button", { name: "Add cover" }).click();
   assert((await page.locator(".layer-swatch.selected").count()) === 2, "Added cover starts selected without clearing existing selection.");
 
@@ -219,12 +258,14 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.getByRole("button", { name: "Base sphere" }).click();
   assert((await page.locator(".layer-swatch.selected").count()) === 2, "Base sphere selects all covers when any cover is unselected.");
 
+  logStep(`${screenshotPrefix}: open color modal`);
   await longPress(page.getByRole("button", { name: "Cover 2" }), page);
   await page.waitForSelector(".color-modal");
   assert((await visibleText(page)).length === 0, "Color modal has no visible text.");
   await page.screenshot({ path: outputPath(`${screenshotPrefix}-color-modal.png`), fullPage: true });
   await page.getByRole("button", { name: "Close" }).click();
 
+  logStep(`${screenshotPrefix}: export logo`);
   await page.getByRole("button", { name: "Save logo" }).click();
   await page.waitForSelector(".save-modal");
   const filenameInput = page.getByRole("textbox", { name: "Filename" });
@@ -254,33 +295,46 @@ function alphaAt(png, x, y) {
 }
 
 async function main() {
+  const forcedExit = setTimeout(() => {
+    console.error("[verify-ui] Verification did not finish within 150000ms.");
+    process.exit(1);
+  }, 150_000);
+
   await mkdir(outputDir, { recursive: true });
 
   const vite = viteCommand();
+  logStep("start Vite");
   const server = spawn(vite.command, vite.args, {
     cwd: projectRoot,
+    detached: process.platform !== "win32",
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
   try {
-    await Promise.race([
-      waitForServer(server),
-      once(server, "exit").then(([code]) => {
-        throw new Error(`Vite exited before verification started with code ${code}.`);
-      }),
-    ]);
+    await withTimeout("Vite startup", 20_000, () =>
+      Promise.race([
+        waitForServer(server),
+        once(server, "exit").then(([code]) => {
+          throw new Error(`Vite exited before verification started with code ${code}.`);
+        }),
+      ]),
+    );
 
+    logStep("launch browser");
     const browser = await launchBrowser();
     const mobile = await browser.newPage({ acceptDownloads: true, deviceScaleFactor: 2, viewport: { width: 390, height: 844 } });
-    await runMainFlowChecks(mobile, "mobile");
+    await withTimeout("Mobile UI verification", 60_000, () => runMainFlowChecks(mobile, "mobile"));
 
     const desktop = await browser.newPage({ acceptDownloads: true, deviceScaleFactor: 1, viewport: { width: 900, height: 900 } });
-    await runMainFlowChecks(desktop, "desktop");
+    await withTimeout("Desktop UI verification", 60_000, () => runMainFlowChecks(desktop, "desktop"));
     await browser.close();
   } finally {
     await stopServer(server);
+    clearTimeout(forcedExit);
   }
+
+  logStep("complete");
 }
 
 main().catch((error) => {
