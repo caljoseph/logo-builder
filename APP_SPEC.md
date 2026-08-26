@@ -14,7 +14,7 @@ The app is a visual instrument with one compact numeric rotation editor. Visible
 - The implementation target is React, TypeScript, Vite, and Canvas 2D.
 - The app should work well on touch devices and desktop browsers.
 - The app background is white.
-- The final exported logo has a transparent background.
+- The final exported logo has a white background.
 - The app persists its state locally and restores it on reload.
 
 ## Main Screen
@@ -245,9 +245,9 @@ Confirming the save:
 - Downloads the current logo as a PNG.
 - Appends `.png` if the filename does not already end with `.png`.
 - Produces a square `1024x1024` image.
-- Uses a transparent background.
+- Uses a white background.
 - Centers the circular logo.
-- Leaves `14%` transparent buffer around the logo circle on every side.
+- Leaves `14%` white buffer around the logo circle on every side.
 
 ## Persistence
 
@@ -299,7 +299,7 @@ Verification should:
 - Verify the color modal has no visible text.
 - Open the save modal and verify `logo.png` is visible.
 - Verify only the `logo` filename stem is selected when the save modal opens.
-- Verify export produces a `1024x1024` PNG with transparent pixels outside the logo buffer.
+- Verify export produces a `1024x1024` PNG with white pixels outside the logo buffer.
 - Exercise both mobile and desktop viewports.
 
 Verification output screenshots are generated artifacts and are not the source of truth. This document remains the source of truth.

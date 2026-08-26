@@ -677,12 +677,18 @@ async function runMainFlowChecks(page, screenshotPrefix) {
 
   const png = PNG.sync.read(await readFile(downloadedPath));
   assert(png.width === 1024 && png.height === 1024, "Logo export is 1024x1024.");
-  assert(alphaAt(png, 0, 0) === 0, "Logo export corner is transparent.");
+  assert(alphaAt(png, 0, 0) === 255, "Logo export corner is opaque.");
+  assert(isWhiteAt(png, 0, 0), "Logo export corner is white.");
   assert(alphaAt(png, 512, 512) > 0, "Logo export has an opaque center logo.");
 }
 
 function alphaAt(png, x, y) {
   return png.data[(png.width * y + x) * 4 + 3];
+}
+
+function isWhiteAt(png, x, y) {
+  const offset = (png.width * y + x) * 4;
+  return png.data[offset] === 255 && png.data[offset + 1] === 255 && png.data[offset + 2] === 255;
 }
 
 async function main() {

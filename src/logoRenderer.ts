@@ -63,7 +63,7 @@ export async function exportLogoPng(state: LogoState): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = EXPORT_SIZE;
   canvas.height = EXPORT_SIZE;
-  renderLogoToCanvas(canvas, state, { transparent: true });
+  renderLogoToCanvas(canvas, state, { transparent: false });
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
 
