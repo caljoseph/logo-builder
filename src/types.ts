@@ -1,8 +1,14 @@
 import type { Matrix3 } from "./rotation";
 
+export type LatticeResolution = "none" | 20 | 80 | 320 | 1280 | 5120;
+
 export type SphereLayer = {
   color: string;
   alpha: number;
+  latticeResolution: LatticeResolution;
+  lineWidth: number;
+  latticeRotation: Matrix3;
+  latticeSelected: boolean;
 };
 
 export type CoverLayer = {
@@ -11,6 +17,10 @@ export type CoverLayer = {
   alpha: number;
   rotation: Matrix3;
   selected: boolean;
+  latticeResolution: LatticeResolution;
+  lineWidth: number;
+  latticeRotation: Matrix3;
+  latticeSelected: boolean;
 };
 
 export type LogoState = {

@@ -1,7 +1,9 @@
-import type { CoverLayer, LogoState } from "./types";
+import type { CoverLayer, LatticeResolution, LogoState, SphereLayer } from "./types";
 import { identityRotation, legacyEulerToMatrix, normalizeRotation, type Matrix3 } from "./rotation";
 
 const STORAGE_KEY = "logoBuilder.state.v1";
+const DEFAULT_LINE_WIDTH = 3;
+const LATTICE_RESOLUTIONS = new Set<LatticeResolution>(["none", 20, 80, 320, 1280, 5120]);
 
 export function createCover(overrides: Partial<CoverLayer> = {}): CoverLayer {
   return {
@@ -10,14 +12,30 @@ export function createCover(overrides: Partial<CoverLayer> = {}): CoverLayer {
     alpha: 1,
     rotation: identityRotation(),
     selected: false,
+    latticeResolution: "none",
+    lineWidth: DEFAULT_LINE_WIDTH,
+    latticeRotation: identityRotation(),
+    latticeSelected: false,
     ...overrides,
   };
 }
 
 export function defaultLogoState(): LogoState {
   return {
-    base: { color: "#ffffff", alpha: 1 },
+    base: createBase(),
     covers: [createCover({ selected: true })],
+  };
+}
+
+function createBase(overrides: Partial<SphereLayer> = {}): SphereLayer {
+  return {
+    color: "#ffffff",
+    alpha: 1,
+    latticeResolution: "none",
+    lineWidth: DEFAULT_LINE_WIDTH,
+    latticeRotation: identityRotation(),
+    latticeSelected: false,
+    ...overrides,
   };
 }
 
@@ -29,6 +47,16 @@ function clampAlpha(value: unknown, fallback: number): number {
 
 function normalizeColor(value: unknown, fallback: string): string {
   return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
+
+function normalizeLineWidth(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(12, Math.max(1, value))
+    : DEFAULT_LINE_WIDTH;
+}
+
+function normalizeLatticeResolution(value: unknown): LatticeResolution {
+  return LATTICE_RESOLUTIONS.has(value as LatticeResolution) ? (value as LatticeResolution) : "none";
 }
 
 function normalizeAngle(value: unknown): number {
@@ -69,6 +97,29 @@ function normalizeCover(value: unknown): CoverLayer | null {
     alpha: clampAlpha(candidate.alpha, 1),
     rotation,
     selected: candidate.selected === true,
+    latticeResolution: normalizeLatticeResolution(candidate.latticeResolution),
+    lineWidth: normalizeLineWidth(candidate.lineWidth),
+    latticeRotation: isMatrix3(candidate.latticeRotation)
+      ? normalizeRotation(candidate.latticeRotation)
+      : identityRotation(),
+    latticeSelected:
+      normalizeLatticeResolution(candidate.latticeResolution) !== "none" && candidate.latticeSelected === true,
+  });
+}
+
+function normalizeBase(value: unknown): SphereLayer {
+  const candidate = value && typeof value === "object" ? (value as Partial<SphereLayer>) : {};
+  const latticeResolution = normalizeLatticeResolution(candidate.latticeResolution);
+
+  return createBase({
+    color: normalizeColor(candidate.color, "#ffffff"),
+    alpha: clampAlpha(candidate.alpha, 1),
+    latticeResolution,
+    lineWidth: normalizeLineWidth(candidate.lineWidth),
+    latticeRotation: isMatrix3(candidate.latticeRotation)
+      ? normalizeRotation(candidate.latticeRotation)
+      : identityRotation(),
+    latticeSelected: latticeResolution !== "none" && candidate.latticeSelected === true,
   });
 }
 
@@ -86,10 +137,7 @@ export function loadLogoState(): LogoState {
       : [];
 
     return {
-      base: {
-        color: normalizeColor(parsed.base?.color, "#ffffff"),
-        alpha: clampAlpha(parsed.base?.alpha, 1),
-      },
+      base: normalizeBase(parsed.base),
       covers: covers.length > 0 ? covers : [createCover({ selected: true })],
     };
   } catch {

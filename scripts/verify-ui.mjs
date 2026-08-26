@@ -379,6 +379,17 @@ async function coverStates(page) {
   });
 }
 
+async function appState(page) {
+  return page.evaluate(() => {
+    const raw = localStorage.getItem("logoBuilder.state.v1");
+    if (!raw) {
+      throw new Error("Logo state was not persisted.");
+    }
+
+    return JSON.parse(raw);
+  });
+}
+
 async function setCoverRotations(page, rotation) {
   await page.evaluate((nextRotation) => {
     const raw = localStorage.getItem("logoBuilder.state.v1");
@@ -390,6 +401,98 @@ async function setCoverRotations(page, rotation) {
     state.covers = state.covers.map((cover) => ({ ...cover, rotation: nextRotation }));
     localStorage.setItem("logoBuilder.state.v1", JSON.stringify(state));
   }, rotation);
+}
+
+async function verifyLatticeLayers(page) {
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+
+  await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await page.waitForSelector(".color-modal");
+
+  const latticeSelect = page.getByRole("combobox", { name: "Lattice" });
+  const lineWidthSlider = page.getByRole("slider", { name: "Line width" });
+  const latticeOptions = await latticeSelect.evaluate((select) =>
+    [...select.options].map((option) => option.textContent),
+  );
+  assert(
+    JSON.stringify(latticeOptions) === JSON.stringify(["None", "20", "80", "320", "1280", "5120"]),
+    "Lattice dropdown exposes every resolution option.",
+  );
+  assert(await lineWidthSlider.isDisabled(), "Line-width slider is disabled while lattice is None.");
+  assert((await lineWidthSlider.inputValue()) === "3", "Line-width slider defaults to 3.");
+
+  const filledStats = await canvasStats(page);
+  await latticeSelect.selectOption("80");
+  assert(!(await lineWidthSlider.isDisabled()), "Line-width slider is enabled after choosing a lattice resolution.");
+  await lineWidthSlider.fill("6");
+
+  let state = await appState(page);
+  assert(state.covers[0].latticeResolution === 80, "Cover source stores the selected lattice resolution.");
+  assert(state.covers[0].lineWidth === 6, "Cover source stores the selected lattice line width.");
+  assert(state.covers[0].selected === true && state.covers[0].latticeSelected === true, "Enabling cover lattice selects source and lattice.");
+  assert((await page.locator(".layer-swatch.selected").count()) === 2, "Cover source and generated lattice swatches are selected.");
+
+  const latticeStats = await canvasStats(page);
+  assert(latticeStats.checksum !== filledStats.checksum, "Enabling lattice changes the logo render.");
+  assert(latticeStats.darkPixels < filledStats.darkPixels, "Source fill is hidden when lattice is enabled.");
+
+  await page.getByRole("button", { name: "Close" }).click();
+  const labels = await page.locator(".layer-row button").evaluateAll((buttons) =>
+    buttons.map((button) => button.getAttribute("aria-label")),
+  );
+  assert(
+    JSON.stringify(labels.slice(0, 4)) === JSON.stringify(["Base sphere", "Cover 1", "Cover 1 lattice", "Add cover"]),
+    "Generated cover lattice appears immediately to the right of its source.",
+  );
+
+  const beforeIndependent = await appState(page);
+  await page.getByRole("button", { name: "Cover 1", exact: true }).click();
+  await dragLogo(page, { dx: 80, dy: 0 });
+  state = await appState(page);
+  assertMatrixClose(state.covers[0].rotation, beforeIndependent.covers[0].rotation, "Unselected source cover does not rotate when only lattice is selected.");
+  assert(
+    maxMatrixDifference(state.covers[0].latticeRotation, beforeIndependent.covers[0].latticeRotation) > 0.001,
+    "Selected generated lattice rotates independently from its source.",
+  );
+
+  await page.getByRole("button", { name: "Cover 1", exact: true }).click();
+  const beforeTogether = await appState(page);
+  await dragLogo(page, { dx: 0, dy: 80 });
+  state = await appState(page);
+  assert(
+    maxMatrixDifference(state.covers[0].rotation, beforeTogether.covers[0].rotation) > 0.001 &&
+      maxMatrixDifference(state.covers[0].latticeRotation, beforeTogether.covers[0].latticeRotation) > 0.001,
+    "Selecting source and lattice rotates both together.",
+  );
+
+  await longPress(page.getByRole("button", { name: "Cover 1 lattice" }), page);
+  assert((await page.locator(".color-modal").count()) === 0, "Long-pressing a generated lattice layer does not open a modal.");
+
+  await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await page.waitForSelector(".color-modal");
+  await latticeSelect.selectOption("320");
+  const afterResolutionChange = await appState(page);
+  assert(afterResolutionChange.covers[0].latticeResolution === 320, "Changing lattice resolution updates the source.");
+  assert(
+    maxMatrixDifference(afterResolutionChange.covers[0].latticeRotation, state.covers[0].latticeRotation) < 0.000001,
+    "Changing between lattice resolutions preserves lattice rotation.",
+  );
+  await latticeSelect.selectOption("none");
+  state = await appState(page);
+  assert(state.covers[0].latticeResolution === "none" && state.covers[0].latticeSelected === false, "Choosing None removes and deselects the generated lattice.");
+  await page.getByRole("button", { name: "Close" }).click();
+  assert((await page.getByRole("button", { name: "Cover 1 lattice" }).count()) === 0, "Generated lattice swatch is removed when resolution returns to None.");
+
+  await longPress(page.getByRole("button", { name: "Base sphere" }), page);
+  await page.waitForSelector(".color-modal");
+  await latticeSelect.selectOption("20");
+  state = await appState(page);
+  assert(state.base.latticeResolution === 20 && state.base.latticeSelected === true, "Enabling base lattice selects the generated base lattice.");
+  assert(state.covers[0].selected === true, "Enabling base lattice preserves existing cover selections.");
+  await page.getByRole("button", { name: "Close" }).click();
+  assert((await page.getByRole("button", { name: "Base lattice" }).count()) === 1, "Base lattice swatch appears when enabled.");
 }
 
 async function setCoverFixtures(page, covers) {
@@ -458,7 +561,7 @@ async function verifyEulerEditor(page) {
   await dragLogo(page, { dx: 0, dy: 40 });
   assert((await eulerFieldValue(page, "Roll")) !== "45.0", "Dragging a selected cover updates the displayed Euler values.");
 
-  await page.getByRole("button", { name: "Cover 1" }).click();
+  await page.getByRole("button", { name: "Cover 1", exact: true }).click();
   await assertEulerFieldValues(page, { Roll: "", Pitch: "", Yaw: "" }, "Euler fields are blank when no cover is selected.");
   await Promise.all([
     expectDisabled(page, "Roll"),
@@ -550,6 +653,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   assert(initial.width > 0 && initial.height > 0, "Canvas has a rendered pixel buffer.");
   assert(initial.darkPixels > 1000, "Initial logo render contains visible cover pixels.");
 
+  await verifyLatticeLayers(page);
   await verifyEulerEditor(page);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
@@ -645,9 +749,12 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   assert((await page.locator(".layer-swatch.selected").count()) === 2, "Base sphere selects all covers when any cover is unselected.");
 
   logStep(`${screenshotPrefix}: open color modal`);
-  await longPress(page.getByRole("button", { name: "Cover 2" }), page);
+  await longPress(page.getByRole("button", { name: "Cover 2", exact: true }), page);
   await page.waitForSelector(".color-modal");
-  assert((await visibleTextWithin(page, ".color-modal")).length === 0, "Color modal has no visible text.");
+  assert(
+    (await visibleTextWithin(page, ".color-modal")).every((text) => ["None", "20", "80", "320", "1280", "5120"].includes(text)),
+    "Color modal visible text is limited to lattice dropdown values.",
+  );
   await page.getByRole("slider", { name: "Alpha" }).fill("0.42");
   const previewAlpha = await page.locator(".color-input-shell").evaluate((element) =>
     Number(window.getComputedStyle(element).getPropertyValue("--edit-alpha")),

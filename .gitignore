@@ -3,4 +3,5 @@ dist
 verification-output/*.png
 verification-output/*.webm
 verification-output/*.zip
+icosphere-output/
 *.tsbuildinfo

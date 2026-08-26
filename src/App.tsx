@@ -1,6 +1,7 @@
 import { Check, Plus, Save, Trash2, X } from "lucide-react";
 import {
   type CSSProperties,
+  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
@@ -11,6 +12,7 @@ import {
 } from "react";
 import { createCover, loadLogoState, saveLogoState } from "./storage";
 import { exportLogoPng, renderLogoToCanvas } from "./logoRenderer";
+import { isLatticeEnabled } from "./icosphere";
 import {
   eulerToMatrix,
   inverseRotation,
@@ -21,7 +23,7 @@ import {
   type EulerAngles,
   type Matrix3,
 } from "./rotation";
-import type { CoverLayer, EditableLayer, LogoState } from "./types";
+import type { CoverLayer, EditableLayer, LatticeResolution, LogoState } from "./types";
 
 const LONG_PRESS_MS = 480;
 const TAP_MOVE_LIMIT = 8;
@@ -32,18 +34,24 @@ const EULER_FIELDS = [
   { key: "yaw", label: "Yaw" },
 ] as const;
 const BLANK_EULER_DRAFTS = { roll: "", pitch: "", yaw: "" };
+const LATTICE_OPTIONS = ["none", 20, 80, 320, 1280, 5120] as const;
+const LINE_WIDTH_MIN = 1;
+const LINE_WIDTH_MAX = 12;
+const DEFAULT_PREVIEW_SIZE = 52;
 
 type EulerField = (typeof EULER_FIELDS)[number]["key"];
 
 type LayerSwatchProps = {
-  kind: "base" | "cover";
+  kind: "base" | "cover" | "lattice";
   color?: string;
   alpha?: number;
   cover?: CoverLayer;
+  previewState?: LogoState;
   selected?: boolean;
   onTap: () => void;
   onLongPress: () => void;
   ariaLabel: string;
+  layerKey?: string;
 };
 
 type PointerPoint = {
@@ -53,10 +61,15 @@ type PointerPoint = {
 };
 
 type EulerDisplayOverride = {
-  coverId: string;
+  layerKey: string;
   rotation: Matrix3;
   values: EulerAngles;
 };
+
+type RotatableLayerRef =
+  | { kind: "baseLattice"; key: string; rotation: Matrix3 }
+  | { kind: "cover"; key: string; id: string; rotation: Matrix3 }
+  | { kind: "coverLattice"; key: string; id: string; rotation: Matrix3 };
 
 export default function App() {
   const [logoState, setLogoState] = useState<LogoState>(() => loadLogoState());
@@ -72,28 +85,22 @@ export default function App() {
   const activePointersRef = useRef<Map<number, PointerPoint>>(new Map());
   const lastTwistAngleRef = useRef<number | null>(null);
   const saveInputRef = useRef<HTMLInputElement | null>(null);
-  const selectedCoverCount = useMemo(
-    () => logoState.covers.filter((cover) => cover.selected).length,
-    [logoState.covers],
-  );
-  const selectedReferenceCover = useMemo(
-    () => logoState.covers.find((cover) => cover.selected) ?? null,
-    [logoState.covers],
-  );
+  const selectedRotatableLayers = useMemo(() => rotatableLayers(logoState).filter((layer) => isLayerSelected(logoState, layer)), [logoState]);
+  const selectedReferenceLayer = selectedRotatableLayers[0] ?? null;
   const referenceEuler = useMemo(() => {
-    if (!selectedReferenceCover) {
+    if (!selectedReferenceLayer) {
       return null;
     }
 
     if (
-      eulerDisplayOverride?.coverId === selectedReferenceCover.id &&
-      matricesAreClose(eulerDisplayOverride.rotation, selectedReferenceCover.rotation)
+      eulerDisplayOverride?.layerKey === selectedReferenceLayer.key &&
+      matricesAreClose(eulerDisplayOverride.rotation, selectedReferenceLayer.rotation)
     ) {
       return eulerDisplayOverride.values;
     }
 
-    return matrixToEuler(selectedReferenceCover.rotation);
-  }, [eulerDisplayOverride, selectedReferenceCover]);
+    return matrixToEuler(selectedReferenceLayer.rotation);
+  }, [eulerDisplayOverride, selectedReferenceLayer]);
   const eulerDisplayValues = useMemo(
     () => ({
       roll: referenceEuler ? formatEulerAngle(referenceEuler.roll) : "",
@@ -108,7 +115,7 @@ export default function App() {
   }, [logoState]);
 
   useEffect(() => {
-    if (!selectedReferenceCover) {
+    if (!selectedReferenceLayer) {
       setActiveEulerField(null);
       setEulerDrafts(BLANK_EULER_DRAFTS);
       return;
@@ -117,7 +124,7 @@ export default function App() {
     if (!activeEulerField) {
       setEulerDrafts(eulerDisplayValues);
     }
-  }, [activeEulerField, eulerDisplayValues, selectedReferenceCover]);
+  }, [activeEulerField, eulerDisplayValues, selectedReferenceLayer]);
 
   useLayoutEffect(() => {
     const shell = logoShellRef.current;
@@ -169,6 +176,9 @@ export default function App() {
 
   const editColor = editingLayer?.kind === "base" ? logoState.base.color : editingCover?.color ?? "#000000";
   const editAlpha = editingLayer?.kind === "base" ? logoState.base.alpha : editingCover?.alpha ?? 1;
+  const editLatticeResolution =
+    editingLayer?.kind === "base" ? logoState.base.latticeResolution : editingCover?.latticeResolution ?? "none";
+  const editLineWidth = editingLayer?.kind === "base" ? logoState.base.lineWidth : editingCover?.lineWidth ?? 3;
 
   function toggleCoverSelection(id: string) {
     setLogoState((current) => ({
@@ -179,13 +189,43 @@ export default function App() {
     }));
   }
 
-  function toggleAllCovers() {
+  function toggleLatticeSelection(kind: "base" | "cover", id?: string) {
     setLogoState((current) => {
-      const shouldSelectAll = current.covers.some((cover) => !cover.selected);
+      if (kind === "base") {
+        if (!isLatticeEnabled(current.base.latticeResolution)) {
+          return current;
+        }
+
+        return { ...current, base: { ...current.base, latticeSelected: !current.base.latticeSelected } };
+      }
 
       return {
         ...current,
-        covers: current.covers.map((cover) => ({ ...cover, selected: shouldSelectAll })),
+        covers: current.covers.map((cover) =>
+          cover.id === id && isLatticeEnabled(cover.latticeResolution)
+            ? { ...cover, latticeSelected: !cover.latticeSelected }
+            : cover,
+        ),
+      };
+    });
+  }
+
+  function toggleAllRotatableLayers() {
+    setLogoState((current) => {
+      const layers = rotatableLayers(current);
+      const shouldSelectAll = layers.some((layer) => !isLayerSelected(current, layer));
+
+      return {
+        ...current,
+        base: {
+          ...current.base,
+          latticeSelected: isLatticeEnabled(current.base.latticeResolution) ? shouldSelectAll : false,
+        },
+        covers: current.covers.map((cover) => ({
+          ...cover,
+          selected: shouldSelectAll,
+          latticeSelected: isLatticeEnabled(cover.latticeResolution) ? shouldSelectAll : false,
+        })),
       };
     });
   }
@@ -234,6 +274,69 @@ export default function App() {
     });
   }
 
+  function updateEditingLineWidth(lineWidth: number) {
+    const boundedLineWidth = clamp(lineWidth, LINE_WIDTH_MIN, LINE_WIDTH_MAX);
+    setLogoState((current) => {
+      if (editingLayer?.kind === "base") {
+        return { ...current, base: { ...current.base, lineWidth: boundedLineWidth } };
+      }
+
+      if (editingLayer?.kind === "cover") {
+        return {
+          ...current,
+          covers: current.covers.map((cover) =>
+            cover.id === editingLayer.id ? { ...cover, lineWidth: boundedLineWidth } : cover,
+          ),
+        };
+      }
+
+      return current;
+    });
+  }
+
+  function updateEditingLatticeResolution(value: string) {
+    const nextResolution = parseLatticeResolution(value);
+
+    setLogoState((current) => {
+      if (editingLayer?.kind === "base") {
+        const wasDisabled = !isLatticeEnabled(current.base.latticeResolution);
+        const isEnabled = isLatticeEnabled(nextResolution);
+
+        return {
+          ...current,
+          base: {
+            ...current.base,
+            latticeResolution: nextResolution,
+            latticeSelected: isEnabled ? (wasDisabled ? true : current.base.latticeSelected) : false,
+          },
+        };
+      }
+
+      if (editingLayer?.kind === "cover") {
+        return {
+          ...current,
+          covers: current.covers.map((cover) => {
+            if (cover.id !== editingLayer.id) {
+              return cover;
+            }
+
+            const wasDisabled = !isLatticeEnabled(cover.latticeResolution);
+            const isEnabled = isLatticeEnabled(nextResolution);
+
+            return {
+              ...cover,
+              selected: isEnabled && wasDisabled ? true : cover.selected,
+              latticeResolution: nextResolution,
+              latticeSelected: isEnabled ? (wasDisabled ? true : cover.latticeSelected) : false,
+            };
+          }),
+        };
+      }
+
+      return current;
+    });
+  }
+
   function deleteEditingCover() {
     if (editingLayer?.kind !== "cover") {
       return;
@@ -249,20 +352,27 @@ export default function App() {
   function rotateSelected(deltaRotation: Matrix3) {
     setEulerDisplayOverride(null);
     setLogoState((current) => {
-      if (!current.covers.some((cover) => cover.selected)) {
+      if (rotatableLayers(current).every((layer) => !isLayerSelected(current, layer))) {
         return current;
       }
 
       return {
         ...current,
-        covers: current.covers.map((cover) =>
-          cover.selected
-            ? {
-                ...cover,
-                rotation: normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation)),
-              }
-            : cover,
-        ),
+        base: current.base.latticeSelected && isLatticeEnabled(current.base.latticeResolution)
+          ? {
+              ...current.base,
+              latticeRotation: normalizeRotation(multiplyMatrices(deltaRotation, current.base.latticeRotation)),
+            }
+          : current.base,
+        covers: current.covers.map((cover) => ({
+          ...cover,
+          rotation: cover.selected
+            ? normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation))
+            : cover.rotation,
+          latticeRotation: cover.latticeSelected && isLatticeEnabled(cover.latticeResolution)
+            ? normalizeRotation(multiplyMatrices(deltaRotation, cover.latticeRotation))
+            : cover.latticeRotation,
+        })),
       };
     });
   }
@@ -271,31 +381,38 @@ export default function App() {
     const trimmedValue = rawValue.trim();
     const parsed = Number(trimmedValue);
 
-    if (!selectedReferenceCover || trimmedValue === "" || !Number.isFinite(parsed)) {
+    if (!selectedReferenceLayer || trimmedValue === "" || !Number.isFinite(parsed)) {
       setActiveEulerField(null);
       setEulerDrafts(eulerDisplayValues);
       return;
     }
 
     const boundedValue = clamp(parsed, 0, 360);
-    const currentEuler = matrixToEuler(selectedReferenceCover.rotation);
+    const currentEuler = matrixToEuler(selectedReferenceLayer.rotation);
     const nextEuler = { ...currentEuler, [field]: boundedValue };
     const targetRotation = normalizeRotation(eulerToMatrix(nextEuler.roll, nextEuler.pitch, nextEuler.yaw));
-    const deltaRotation = multiplyMatrices(targetRotation, inverseRotation(selectedReferenceCover.rotation));
+    const deltaRotation = multiplyMatrices(targetRotation, inverseRotation(selectedReferenceLayer.rotation));
 
     setLogoState((current) => ({
       ...current,
-      covers: current.covers.map((cover) =>
-        cover.selected
-          ? {
-              ...cover,
-              rotation: normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation)),
-            }
-          : cover,
-      ),
+      base: current.base.latticeSelected && isLatticeEnabled(current.base.latticeResolution)
+        ? {
+            ...current.base,
+            latticeRotation: normalizeRotation(multiplyMatrices(deltaRotation, current.base.latticeRotation)),
+          }
+        : current.base,
+      covers: current.covers.map((cover) => ({
+        ...cover,
+        rotation: cover.selected
+          ? normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation))
+          : cover.rotation,
+        latticeRotation: cover.latticeSelected && isLatticeEnabled(cover.latticeResolution)
+          ? normalizeRotation(multiplyMatrices(deltaRotation, cover.latticeRotation))
+          : cover.latticeRotation,
+      })),
     }));
     setEulerDisplayOverride({
-      coverId: selectedReferenceCover.id,
+      layerKey: selectedReferenceLayer.key,
       rotation: targetRotation,
       values: nextEuler,
     });
@@ -303,7 +420,7 @@ export default function App() {
   }
 
   function handleEulerFocus(field: EulerField) {
-    if (!selectedReferenceCover) {
+    if (!selectedReferenceLayer) {
       return;
     }
 
@@ -327,7 +444,7 @@ export default function App() {
   }
 
   function handleLogoPointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (selectedCoverCount === 0) {
+    if (selectedRotatableLayers.length === 0) {
       return;
     }
 
@@ -346,7 +463,7 @@ export default function App() {
   function handleLogoPointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
     const pointer = activePointersRef.current.get(event.pointerId);
 
-    if (!pointer || selectedCoverCount === 0) {
+    if (!pointer || selectedRotatableLayers.length === 0) {
       return;
     }
 
@@ -408,20 +525,48 @@ export default function App() {
           kind="base"
           color={logoState.base.color}
           alpha={logoState.base.alpha}
-          onTap={toggleAllCovers}
+          onTap={toggleAllRotatableLayers}
           onLongPress={() => setEditingLayer({ kind: "base" })}
           ariaLabel="Base sphere"
+          layerKey="base"
         />
-        {logoState.covers.map((cover, index) => (
+        {isLatticeEnabled(logoState.base.latticeResolution) && (
           <LayerSwatch
-            key={cover.id}
-            kind="cover"
-            cover={cover}
-            selected={cover.selected}
-            onTap={() => toggleCoverSelection(cover.id)}
-            onLongPress={() => setEditingLayer({ kind: "cover", id: cover.id })}
-            ariaLabel={`Cover ${index + 1}`}
+            kind="lattice"
+            previewState={{ ...logoState, covers: [] }}
+            selected={logoState.base.latticeSelected}
+            onTap={() => toggleLatticeSelection("base")}
+            onLongPress={() => undefined}
+            ariaLabel="Base lattice"
+            layerKey="base-lattice"
           />
+        )}
+        {logoState.covers.map((cover, index) => (
+          <Fragment key={cover.id}>
+            <LayerSwatch
+              kind="cover"
+              cover={{ ...cover, latticeResolution: "none", latticeSelected: false }}
+              selected={cover.selected}
+              onTap={() => toggleCoverSelection(cover.id)}
+              onLongPress={() => setEditingLayer({ kind: "cover", id: cover.id })}
+              ariaLabel={`Cover ${index + 1}`}
+              layerKey={`cover-${cover.id}`}
+            />
+            {isLatticeEnabled(cover.latticeResolution) && (
+              <LayerSwatch
+                kind="lattice"
+                previewState={{
+                  base: { ...logoState.base, alpha: 0, latticeResolution: "none", latticeSelected: false },
+                  covers: [{ ...cover, selected: false }],
+                }}
+                selected={cover.latticeSelected}
+                onTap={() => toggleLatticeSelection("cover", cover.id)}
+                onLongPress={() => undefined}
+                ariaLabel={`Cover ${index + 1} lattice`}
+                layerKey={`cover-lattice-${cover.id}`}
+              />
+            )}
+          </Fragment>
         ))}
         <button className="icon-button layer-add" type="button" onClick={addCover} aria-label="Add cover">
           <Plus aria-hidden="true" size={24} strokeWidth={2.5} />
@@ -451,8 +596,8 @@ export default function App() {
               <input
                 type="text"
                 inputMode="decimal"
-                value={selectedReferenceCover ? (activeEulerField === key ? eulerDrafts[key] : eulerDisplayValues[key]) : ""}
-                disabled={!selectedReferenceCover}
+                value={selectedReferenceLayer ? (activeEulerField === key ? eulerDrafts[key] : eulerDisplayValues[key]) : ""}
+                disabled={!selectedReferenceLayer}
                 onFocus={() => handleEulerFocus(key)}
                 onChange={(event) => handleEulerChange(key, event.target.value)}
                 onBlur={() => handleEulerBlur(key)}
@@ -496,6 +641,29 @@ export default function App() {
               onChange={(event) => updateEditingAlpha(Number(event.target.value))}
               aria-label="Alpha"
             />
+            <select
+              className="lattice-select"
+              value={String(editLatticeResolution)}
+              onChange={(event) => updateEditingLatticeResolution(event.target.value)}
+              aria-label="Lattice"
+            >
+              {LATTICE_OPTIONS.map((option) => (
+                <option key={option} value={String(option)}>
+                  {option === "none" ? "None" : option}
+                </option>
+              ))}
+            </select>
+            <input
+              className="line-width-input"
+              type="range"
+              min={LINE_WIDTH_MIN}
+              max={LINE_WIDTH_MAX}
+              step="0.1"
+              value={editLineWidth}
+              disabled={!isLatticeEnabled(editLatticeResolution)}
+              onChange={(event) => updateEditingLineWidth(Number(event.target.value))}
+              aria-label="Line width"
+            />
             {editingLayer.kind === "cover" && (
               <button className="trash-button icon-button" type="button" onClick={deleteEditingCover} aria-label="Delete cover">
                 <Trash2 aria-hidden="true" size={23} strokeWidth={2.4} />
@@ -533,10 +701,12 @@ function LayerSwatch({
   color = "#ffffff",
   alpha = 1,
   cover,
+  previewState,
   selected = false,
   onTap,
   onLongPress,
   ariaLabel,
+  layerKey,
 }: LayerSwatchProps) {
   const timerRef = useRef<number | null>(null);
   const startRef = useRef<{ x: number; y: number } | null>(null);
@@ -546,15 +716,25 @@ function LayerSwatch({
   useLayoutEffect(() => {
     const canvas = previewCanvasRef.current;
 
-    if (!canvas || kind !== "cover" || !cover) {
+    if (!canvas || kind === "base") {
       return;
     }
 
-    const size = Math.max(1, Math.round((canvas.clientWidth || 52) * (window.devicePixelRatio || 1)));
+    const size = Math.max(1, Math.round((canvas.clientWidth || DEFAULT_PREVIEW_SIZE) * (window.devicePixelRatio || 1)));
     canvas.width = size;
     canvas.height = size;
-    renderLogoToCanvas(canvas, { base: { color: "#ffffff", alpha: 0 }, covers: [{ ...cover, selected: false }] }, { transparent: true, padding: 0.1 });
-  }, [cover, kind]);
+
+    if (kind === "cover" && cover) {
+      renderLogoToCanvas(canvas, {
+        base: invisibleBase(),
+        covers: [{ ...cover, selected: false, latticeResolution: "none", latticeSelected: false }],
+      }, { transparent: true, padding: 0.1 });
+    }
+
+    if (kind === "lattice" && previewState) {
+      renderLogoToCanvas(canvas, previewState, { transparent: true, padding: 0.1 });
+    }
+  }, [cover, kind, previewState]);
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -601,18 +781,76 @@ function LayerSwatch({
 
   return (
     <button
-      className={`${kind === "base" ? "layer-swatch base-swatch" : "layer-swatch cover-swatch"}${selected ? " selected" : ""}`}
+      className={`${kind === "base" ? "layer-swatch base-swatch" : "layer-swatch cover-swatch"}${kind === "lattice" ? " lattice-swatch" : ""}${selected ? " selected" : ""}`}
       type="button"
       aria-label={ariaLabel}
+      data-layer-key={layerKey}
+      data-layer-kind={kind}
       style={{ "--swatch-color": color, "--swatch-alpha": alpha } as CSSProperties}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerEnd}
       onPointerCancel={handlePointerEnd}
     >
-      {kind === "cover" ? <canvas ref={previewCanvasRef} aria-hidden="true" /> : <span aria-hidden="true" />}
+      {kind === "base" ? <span aria-hidden="true" /> : <canvas ref={previewCanvasRef} aria-hidden="true" />}
     </button>
   );
+}
+
+function rotatableLayers(state: LogoState): RotatableLayerRef[] {
+  return [
+    ...(isLatticeEnabled(state.base.latticeResolution)
+      ? [{ kind: "baseLattice" as const, key: "base-lattice", rotation: state.base.latticeRotation }]
+      : []),
+    ...state.covers.flatMap((cover) => [
+      { kind: "cover" as const, key: `cover-${cover.id}`, id: cover.id, rotation: cover.rotation },
+      ...(isLatticeEnabled(cover.latticeResolution)
+        ? [{ kind: "coverLattice" as const, key: `cover-lattice-${cover.id}`, id: cover.id, rotation: cover.latticeRotation }]
+        : []),
+    ]),
+  ];
+}
+
+function isLayerSelected(state: LogoState, layer: RotatableLayerRef): boolean {
+  if (layer.kind === "baseLattice") {
+    return isLatticeEnabled(state.base.latticeResolution) && state.base.latticeSelected;
+  }
+
+  const cover = state.covers.find((candidate) => candidate.id === layer.id);
+
+  if (!cover) {
+    return false;
+  }
+
+  return layer.kind === "cover"
+    ? cover.selected
+    : isLatticeEnabled(cover.latticeResolution) && cover.latticeSelected;
+}
+
+function parseLatticeResolution(value: string): LatticeResolution {
+  if (value === "none") {
+    return "none";
+  }
+
+  const parsed = Number(value);
+  return LATTICE_OPTIONS.includes(parsed as (typeof LATTICE_OPTIONS)[number])
+    ? (parsed as LatticeResolution)
+    : "none";
+}
+
+function invisibleBase(): LogoState["base"] {
+  return {
+    color: "#ffffff",
+    alpha: 0,
+    latticeResolution: "none",
+    lineWidth: 3,
+    latticeRotation: [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ],
+    latticeSelected: false,
+  };
 }
 
 function twistAngle(points: PointerPoint[]): number {

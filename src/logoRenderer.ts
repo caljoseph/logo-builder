@@ -1,4 +1,5 @@
 import type { CoverLayer, LogoState } from "./types";
+import { createIcosphere, isLatticeEnabled, sampleGreatCircleEdge } from "./icosphere";
 import { multiplyMatrixVector, transpose, type Matrix3, type Vec3 } from "./rotation";
 
 type Vec2 = [number, number];
@@ -52,10 +53,39 @@ export function renderLogo(
     context.fillRect(0, 0, width, height);
   }
 
-  drawCircle(context, centerX, centerY, radius, state.base.color, state.base.alpha);
+  if (isLatticeEnabled(state.base.latticeResolution)) {
+    drawLatticeLayer(context, {
+      maskPolygons: [circlePolygon()],
+      color: state.base.color,
+      alpha: state.base.alpha,
+      lineWidth: state.base.lineWidth,
+      resolution: state.base.latticeResolution,
+      rotation: state.base.latticeRotation,
+      centerX,
+      centerY,
+      radius,
+    });
+  } else {
+    drawCircle(context, centerX, centerY, radius, state.base.color, state.base.alpha);
+  }
 
   for (const cover of state.covers) {
-    drawCover(context, cover, centerX, centerY, radius);
+    if (isLatticeEnabled(cover.latticeResolution)) {
+      const polygons = visibleCoverPolygons(cover.rotation);
+      drawLatticeLayer(context, {
+        maskPolygons: polygons,
+        color: cover.color,
+        alpha: cover.alpha,
+        lineWidth: cover.lineWidth,
+        resolution: cover.latticeResolution,
+        rotation: cover.latticeRotation,
+        centerX,
+        centerY,
+        radius,
+      });
+    } else {
+      drawCover(context, cover, centerX, centerY, radius);
+    }
   }
 }
 
@@ -104,8 +134,7 @@ function drawCover(
   }
 
   const rotation = cover.rotation;
-  const rotated = seamPoints.map((point) => multiplyMatrixVector(rotation, point));
-  const polygons = buildVisibleCoverPolygons(rotated, rotation);
+  const polygons = visibleCoverPolygons(rotation);
 
   context.save();
   context.fillStyle = colorWithAlpha(cover.color, cover.alpha);
@@ -127,6 +156,154 @@ function drawCover(
   }
 
   context.restore();
+}
+
+export function visibleCoverPolygons(rotation: Matrix3): Vec2[][] {
+  const rotated = seamPoints.map((point) => multiplyMatrixVector(rotation, point));
+  return buildVisibleCoverPolygons(rotated, rotation);
+}
+
+type LatticeDrawOptions = {
+  maskPolygons: Vec2[][];
+  color: string;
+  alpha: number;
+  lineWidth: number;
+  resolution: 20 | 80 | 320 | 1280 | 5120;
+  rotation: Matrix3;
+  centerX: number;
+  centerY: number;
+  radius: number;
+};
+
+function drawLatticeLayer(
+  context: CanvasRenderingContext2D,
+  { maskPolygons, color, alpha, lineWidth, resolution, rotation, centerX, centerY, radius }: LatticeDrawOptions,
+): void {
+  if (alpha <= 0 || maskPolygons.length === 0) {
+    return;
+  }
+
+  const mesh = createIcosphere(resolution);
+  const strokeWidth = scaledLineWidth(lineWidth, radius);
+  const strokeStyle = colorWithAlpha(color, alpha);
+
+  context.save();
+  beginMaskPath(context, maskPolygons, centerX, centerY, radius);
+  context.clip();
+  context.strokeStyle = strokeStyle;
+  context.lineWidth = strokeWidth;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  for (const [startIndex, endIndex] of mesh.edges) {
+    const points = sampleGreatCircleEdge(mesh.vertices[startIndex], mesh.vertices[endIndex]).map((point) =>
+      multiplyMatrixVector(rotation, point),
+    );
+    drawFrontPolyline(context, points, centerX, centerY, radius);
+  }
+
+  context.restore();
+
+  context.save();
+  context.strokeStyle = strokeStyle;
+  context.lineWidth = strokeWidth;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  beginMaskPath(context, maskPolygons, centerX, centerY, radius);
+  context.stroke();
+  context.restore();
+}
+
+function drawFrontPolyline(
+  context: CanvasRenderingContext2D,
+  points: Vec3[],
+  centerX: number,
+  centerY: number,
+  radius: number,
+): void {
+  let drawing = false;
+
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const previous = points[index - 1];
+
+    if (previous && previous[2] * current[2] < 0) {
+      const crossing = interpolateZCrossing(previous, current);
+      const [x, y] = toCanvas(crossing, centerX, centerY, radius);
+
+      if (drawing) {
+        context.lineTo(x, y);
+        context.stroke();
+        drawing = false;
+      } else if (current[2] >= 0) {
+        context.beginPath();
+        context.moveTo(x, y);
+        drawing = true;
+      }
+    }
+
+    if (current[2] < 0) {
+      continue;
+    }
+
+    const [x, y] = toCanvas(current, centerX, centerY, radius);
+
+    if (!drawing) {
+      context.beginPath();
+      context.moveTo(x, y);
+      drawing = true;
+    } else {
+      context.lineTo(x, y);
+    }
+  }
+
+  if (drawing) {
+    context.stroke();
+  }
+}
+
+function beginMaskPath(
+  context: CanvasRenderingContext2D,
+  polygons: Vec2[][],
+  centerX: number,
+  centerY: number,
+  radius: number,
+): void {
+  context.beginPath();
+
+  for (const polygon of polygons) {
+    if (polygon.length < 3) {
+      continue;
+    }
+
+    const [startX, startY] = toCanvas(polygon[0], centerX, centerY, radius);
+    context.moveTo(startX, startY);
+
+    for (let index = 1; index < polygon.length; index += 1) {
+      const [x, y] = toCanvas(polygon[index], centerX, centerY, radius);
+      context.lineTo(x, y);
+    }
+
+    context.closePath();
+  }
+}
+
+function toCanvas(point: Vec2 | Vec3, centerX: number, centerY: number, radius: number): Vec2 {
+  return [centerX + point[0] * radius, centerY - point[1] * radius];
+}
+
+function interpolateZCrossing(a: Vec3, b: Vec3): Vec3 {
+  const fraction = a[2] / (a[2] - b[2]);
+
+  return [
+    a[0] + (b[0] - a[0]) * fraction,
+    a[1] + (b[1] - a[1]) * fraction,
+    0,
+  ];
+}
+
+function scaledLineWidth(lineWidth: number, radius: number): number {
+  return Math.max(0.75, lineWidth * (radius / 340));
 }
 
 function buildVisibleCoverPolygons(rotated: Vec3[], rotation: Matrix3): Vec2[][] {

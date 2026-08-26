@@ -113,7 +113,8 @@ input:focus-visible {
   overflow: visible;
 }
 
-.cover-swatch canvas {
+.cover-swatch canvas,
+.lattice-swatch canvas {
   position: relative;
   z-index: 1;
   display: block;
@@ -309,10 +310,27 @@ input:focus-visible {
   border-radius: 999px;
 }
 
-.alpha-input {
+.alpha-input,
+.line-width-input {
   width: 220px;
   max-width: 100%;
   accent-color: #111111;
+}
+
+.line-width-input:disabled {
+  opacity: 0.32;
+}
+
+.lattice-select {
+  width: 128px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #ffffff;
+  text-align: center;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, 0.06);
 }
 
 .trash-button {
