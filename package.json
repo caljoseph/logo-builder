@@ -1,0 +1,27 @@
+{
+  "name": "logo-builder",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build && node scripts/build-sw.mjs",
+    "generate:icons": "node scripts/generate-icons.mjs",
+    "preview": "vite preview --host 0.0.0.0",
+    "verify:ui": "node scripts/verify-ui.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^1.21.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "pngjs": "^7.0.0",
+    "playwright": "^1.61.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  }
+}

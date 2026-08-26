@@ -1,0 +1,6 @@
+node_modules
+dist
+verification-output/*.png
+verification-output/*.webm
+verification-output/*.zip
+*.tsbuildinfo

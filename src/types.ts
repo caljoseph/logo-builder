@@ -1,0 +1,23 @@
+export type SphereLayer = {
+  color: string;
+  alpha: number;
+};
+
+export type CoverLayer = {
+  id: string;
+  color: string;
+  alpha: number;
+  roll: number;
+  pitch: number;
+  yaw: number;
+  selected: boolean;
+};
+
+export type LogoState = {
+  base: SphereLayer;
+  covers: CoverLayer[];
+};
+
+export type EditableLayer =
+  | { kind: "base" }
+  | { kind: "cover"; id: string };

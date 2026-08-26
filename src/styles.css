@@ -1,0 +1,301 @@
+:root {
+  color: #111111;
+  background: #ffffff;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --ink: #111111;
+  --line: #e6e6e6;
+  --soft-line: #f1f1f1;
+  --surface: #ffffff;
+  --shadow: 0 18px 48px rgba(17, 17, 17, 0.13);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgba(17, 17, 17, 0.32);
+  outline-offset: 3px;
+}
+
+.app-shell {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: #ffffff;
+  padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+}
+
+.layer-row {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  padding: 2px 70px 2px 2px;
+}
+
+.layer-row::-webkit-scrollbar {
+  display: none;
+}
+
+.icon-button,
+.layer-swatch {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--ink);
+  background: #ffffff;
+}
+
+.icon-button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, 0.08);
+}
+
+.layer-swatch {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(45deg, #d9d9d9 25%, transparent 25%),
+    linear-gradient(-45deg, #d9d9d9 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #d9d9d9 75%),
+    linear-gradient(-45deg, transparent 75%, #d9d9d9 75%),
+    #ffffff;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
+.base-swatch {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+}
+
+.cover-swatch {
+  border-radius: 8px;
+  overflow: visible;
+}
+
+.cover-swatch canvas {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 44px;
+  height: 44px;
+  pointer-events: none;
+}
+
+.base-swatch::before {
+  position: absolute;
+  inset: 5px;
+  border-radius: inherit;
+  background: var(--swatch-color);
+  opacity: var(--swatch-alpha);
+  content: "";
+}
+
+.layer-swatch.selected::after {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid #111111;
+  border-radius: inherit;
+  content: "";
+}
+
+.layer-add {
+  margin-left: 2px;
+}
+
+.logo-zone {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 12px 0 74px;
+}
+
+.logo-shell {
+  width: min(82vmin, 680px);
+  aspect-ratio: 1;
+  touch-action: none;
+}
+
+.logo-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.logo-canvas:active {
+  cursor: grabbing;
+}
+
+.save-button {
+  position: fixed;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 10;
+  width: 52px;
+  height: 52px;
+}
+
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(10px);
+}
+
+.tool-modal {
+  position: relative;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  gap: 22px;
+  width: min(100%, 310px);
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.color-modal {
+  padding: 54px 28px 28px;
+}
+
+.save-modal {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 58px 24px 24px;
+}
+
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 34px;
+  height: 34px;
+  box-shadow: none;
+}
+
+.color-input {
+  width: 82px;
+  height: 82px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 999px;
+}
+
+.color-input::-moz-color-swatch {
+  border: 0;
+  border-radius: 999px;
+}
+
+.alpha-input {
+  width: 220px;
+  max-width: 100%;
+  accent-color: #111111;
+}
+
+.trash-button {
+  width: 48px;
+  height: 48px;
+}
+
+.filename-input {
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 13px;
+  color: var(--ink);
+  background: #ffffff;
+  font-size: 1rem;
+}
+
+.confirm-button {
+  width: 48px;
+  height: 48px;
+}
+
+@media (max-width: 520px) {
+  .app-shell {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .layer-row {
+    gap: 10px;
+    padding-right: 66px;
+  }
+
+  .logo-shell {
+    width: min(88vmin, 520px);
+  }
+}
