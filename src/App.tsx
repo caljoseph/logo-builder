@@ -237,7 +237,7 @@ export default function App() {
       const nextAngle = twistAngle(activePointers);
       const previousAngle = lastTwistAngleRef.current ?? nextAngle;
       lastTwistAngleRef.current = nextAngle;
-      rotateSelected(screenAxisRotation({ zDegrees: -radiansToDegrees(shortestAngleDelta(previousAngle, nextAngle)) }));
+      rotateSelected(twistToScreenRotation(previousAngle, nextAngle));
       return;
     }
 
@@ -245,14 +245,9 @@ export default function App() {
     const deltaY = event.clientY - pointer.y;
 
     if (event.shiftKey) {
-      const previousAngle = pointerAngleAroundElement(event.currentTarget, pointer);
-      const nextAngle = pointerAngleAroundElement(event.currentTarget, { x: event.clientX, y: event.clientY });
-      rotateSelected(screenAxisRotation({ zDegrees: -radiansToDegrees(shortestAngleDelta(previousAngle, nextAngle)) }));
+      rotateSelected(shiftDragToScreenRotation(event.currentTarget, pointer, { x: event.clientX, y: event.clientY }));
     } else {
-      rotateSelected(screenAxisRotation({
-        xDegrees: deltaY * DRAG_DEGREES_PER_PIXEL,
-        yDegrees: deltaX * DRAG_DEGREES_PER_PIXEL,
-      }));
+      rotateSelected(dragToScreenRotation(deltaX, deltaY));
     }
   }
 
@@ -477,6 +472,29 @@ function LayerSwatch({
 function twistAngle(points: PointerPoint[]): number {
   const [first, second] = points;
   return Math.atan2(second.y - first.y, second.x - first.x);
+}
+
+function dragToScreenRotation(deltaX: number, deltaY: number): Matrix3 {
+  // Single-pointer movement is one screen-space axis-angle update with no z component.
+  return screenAxisRotation({
+    xDegrees: deltaY * DRAG_DEGREES_PER_PIXEL,
+    yDegrees: deltaX * DRAG_DEGREES_PER_PIXEL,
+  });
+}
+
+function twistToScreenRotation(previousAngle: number, nextAngle: number): Matrix3 {
+  return screenAxisRotation({ zDegrees: radiansToDegrees(shortestAngleDelta(previousAngle, nextAngle)) });
+}
+
+function shiftDragToScreenRotation(
+  element: HTMLElement,
+  previousPoint: Pick<PointerPoint, "x" | "y">,
+  nextPoint: Pick<PointerPoint, "x" | "y">,
+): Matrix3 {
+  return twistToScreenRotation(
+    pointerAngleAroundElement(element, previousPoint),
+    pointerAngleAroundElement(element, nextPoint),
+  );
 }
 
 function pointerAngleAroundElement(element: HTMLElement, point: Pick<PointerPoint, "x" | "y">): number {

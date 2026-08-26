@@ -66,6 +66,14 @@ function identityRotation() {
 }
 
 function screenAxisRotation({ xDegrees = 0, yDegrees = 0, zDegrees = 0 }) {
+  return modelAxisRotation({
+    xDegrees: -xDegrees,
+    yDegrees: -yDegrees,
+    zDegrees: -zDegrees,
+  });
+}
+
+function modelAxisRotation({ xDegrees = 0, yDegrees = 0, zDegrees = 0 }) {
   const angleDegrees = Math.hypot(xDegrees, yDegrees, zDegrees);
 
   if (angleDegrees === 0) {
@@ -323,6 +331,14 @@ async function setCoverRotations(page, rotation) {
   }, rotation);
 }
 
+async function seededDragChecksum(page, rotation, dragOptions) {
+  await setCoverRotations(page, rotation);
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await dragLogo(page, dragOptions);
+  return (await canvasStats(page)).checksum;
+}
+
 async function verifyLegacyMigration(page) {
   await page.goto(baseUrl);
   await page.evaluate(() => {
@@ -382,7 +398,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
 
   await dragLogo(page, { dx: 100, dy: 0 });
   let rotations = await coverRotations(page);
-  let expectedRotation = screenAxisRotation({ yDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
+  let expectedRotation = modelAxisRotation({ yDegrees: -100 * DRAG_DEGREES_PER_PIXEL });
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging right applies only screen y-axis rotation."));
 
   await page.evaluate(() => localStorage.clear());
@@ -392,7 +408,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
 
   await dragLogo(page, { dx: 0, dy: 100 });
   rotations = await coverRotations(page);
-  expectedRotation = screenAxisRotation({ xDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
+  expectedRotation = modelAxisRotation({ xDegrees: -100 * DRAG_DEGREES_PER_PIXEL });
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging down applies only screen x-axis rotation."));
 
   await page.evaluate(() => localStorage.clear());
@@ -402,7 +418,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
 
   await dragLogo(page, { startOffsetY: -100, dx: 100, dy: 100, shift: true });
   rotations = await coverRotations(page);
-  expectedRotation = screenAxisRotation({ zDegrees: -90 });
+  expectedRotation = modelAxisRotation({ zDegrees: -90 });
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Clockwise Shift-drag applies only screen z-axis rotation."));
 
   const preRotated = screenAxisRotation({ xDegrees: 28, yDegrees: -17, zDegrees: 42 });
@@ -411,7 +427,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.waitForSelector("[data-logo-canvas]");
   await dragLogo(page, { dx: 80, dy: 0 });
   rotations = await coverRotations(page);
-  expectedRotation = multiplyMatrices(screenAxisRotation({ yDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
+  expectedRotation = multiplyMatrices(modelAxisRotation({ yDegrees: -80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Horizontal drag pre-multiplies screen y-axis rotation."));
 
   await setCoverRotations(page, preRotated);
@@ -419,7 +435,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.waitForSelector("[data-logo-canvas]");
   await dragLogo(page, { dx: 0, dy: 80 });
   rotations = await coverRotations(page);
-  expectedRotation = multiplyMatrices(screenAxisRotation({ xDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
+  expectedRotation = multiplyMatrices(modelAxisRotation({ xDegrees: -80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Vertical drag pre-multiplies screen x-axis rotation."));
 
   await setCoverRotations(page, preRotated);
@@ -427,8 +443,19 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.waitForSelector("[data-logo-canvas]");
   await dragLogo(page, { startOffsetY: -100, dx: 100, dy: 100, shift: true });
   rotations = await coverRotations(page);
-  expectedRotation = multiplyMatrices(screenAxisRotation({ zDegrees: -90 }), preRotated);
+  expectedRotation = multiplyMatrices(modelAxisRotation({ zDegrees: -90 }), preRotated);
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Clockwise Shift-drag pre-multiplies screen z-axis rotation."));
+
+  const visualSeed = screenAxisRotation({ xDegrees: 35, yDegrees: 22, zDegrees: -18 });
+  const unchangedChecksum = await seededDragChecksum(page, visualSeed, { dx: 0, dy: 0 });
+  const rightChecksum = await seededDragChecksum(page, visualSeed, { dx: 60, dy: 0 });
+  const leftChecksum = await seededDragChecksum(page, visualSeed, { dx: -60, dy: 0 });
+  const downChecksum = await seededDragChecksum(page, visualSeed, { dx: 0, dy: 60 });
+  const upChecksum = await seededDragChecksum(page, visualSeed, { dx: 0, dy: -60 });
+  assert(rightChecksum !== unchangedChecksum && leftChecksum !== unchangedChecksum, "Horizontal drags visibly rotate the logo.");
+  assert(downChecksum !== unchangedChecksum && upChecksum !== unchangedChecksum, "Vertical drags visibly rotate the logo.");
+  assert(rightChecksum !== leftChecksum, "Left and right drags produce opposite visual rotations.");
+  assert(downChecksum !== upChecksum, "Up and down drags produce opposite visual rotations.");
 
   await page.getByRole("button", { name: "Base sphere" }).click();
   assert((await page.locator(".layer-swatch.selected").count()) === 0, "Base sphere clears selection when every cover is selected.");

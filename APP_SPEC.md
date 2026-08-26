@@ -126,6 +126,8 @@ Clicking outside a modal does not dismiss it. The `X` must be clicked or tapped 
 
 The logo preview itself is the rotation pad.
 
+Gesture coordinates use the browser screen basis: `+x` points right, `+y` points down, and `+z` points toward the user. Rendering coordinates use the mathematical model basis: `+x` points right, `+y` points up, and `+z` points toward the user. The implementation must convert screen-space gesture rotations into model-space matrices in one shared conversion layer.
+
 When one or more cover layers are selected:
 
 - Mouse drag or one-finger horizontal drag rotates only around the screen y-axis.

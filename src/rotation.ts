@@ -20,6 +20,21 @@ export function screenAxisRotation({
   yDegrees = 0,
   zDegrees = 0,
 }: ScreenAxisRotation): Matrix3 {
+  // Browser gestures are described in screen coordinates: +x right, +y down,
+  // +z toward the viewer. The renderer uses +y up, so screen-positive
+  // rotations are the opposite signed model-space rotations.
+  return modelAxisRotation({
+    xDegrees: -xDegrees,
+    yDegrees: -yDegrees,
+    zDegrees: -zDegrees,
+  });
+}
+
+function modelAxisRotation({
+  xDegrees = 0,
+  yDegrees = 0,
+  zDegrees = 0,
+}: ScreenAxisRotation): Matrix3 {
   const angleDegrees = Math.hypot(xDegrees, yDegrees, zDegrees);
 
   if (angleDegrees === 0) {
