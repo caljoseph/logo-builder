@@ -70,7 +70,7 @@ The layer row:
 - Shows cover layers from deepest to surface-most left-to-right.
 - Shows a plus icon at far right.
 - Uses each layer's current color, alpha, and cover rotation in its row preview.
-- May use subtle backing inside or behind layer controls so transparent or white layers remain discoverable.
+- Uses the same white visual background as the app; transparent or white layers remain discoverable only through the control border, shadow, and selected cover ring.
 - Shows selected cover layers with a visual ring or equivalent icon-free treatment.
 - Does not show the base sphere as selected.
 
@@ -130,6 +130,7 @@ When one or more cover layers are selected:
 - Mouse drag or one-finger vertical drag changes roll, rolling toward or away from the viewer.
 - Two-finger twist changes yaw, rotating on an axis orthogonal to the screen.
 - On desktop, `Shift` plus drag changes yaw.
+- Gesture direction is screen-aligned: dragging left pitches left, dragging right pitches right, dragging down rolls down, dragging up rolls up, and clockwise two-finger twist yaws clockwise.
 
 When no cover layers are selected:
 

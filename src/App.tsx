@@ -238,7 +238,7 @@ export default function App() {
       const nextAngle = twistAngle(activePointers);
       const previousAngle = lastTwistAngleRef.current ?? nextAngle;
       lastTwistAngleRef.current = nextAngle;
-      rotateSelected({ yaw: radiansToDegrees(nextAngle - previousAngle) });
+      rotateSelected({ yaw: radiansToDegrees(previousAngle - nextAngle) });
       return;
     }
 
@@ -246,11 +246,12 @@ export default function App() {
     const deltaY = event.clientY - pointer.y;
 
     if (event.shiftKey) {
-      rotateSelected({ yaw: deltaX * DRAG_DEGREES_PER_PIXEL });
+      rotateSelected({ yaw: -deltaX * DRAG_DEGREES_PER_PIXEL });
     } else {
+      // Screen-space drags should move the apparent cover in the same direction as the pointer.
       rotateSelected({
-        pitch: deltaX * DRAG_DEGREES_PER_PIXEL,
-        roll: deltaY * DRAG_DEGREES_PER_PIXEL,
+        pitch: -deltaX * DRAG_DEGREES_PER_PIXEL,
+        roll: -deltaY * DRAG_DEGREES_PER_PIXEL,
       });
     }
   }

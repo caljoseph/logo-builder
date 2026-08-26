@@ -205,10 +205,33 @@ async function dragLogo(page, options = {}) {
   const startX = box.x + box.width / 2;
   const startY = box.y + box.height / 2;
 
+  if (options.shift) {
+    await page.keyboard.down("Shift");
+  }
+
   await page.mouse.move(startX, startY);
   await page.mouse.down();
   await page.mouse.move(startX + (options.dx ?? 120), startY + (options.dy ?? 78), { steps: 10 });
   await page.mouse.up();
+
+  if (options.shift) {
+    await page.keyboard.up("Shift");
+  }
+}
+
+async function coverAngles(page) {
+  return page.evaluate(() => {
+    const raw = localStorage.getItem("logoBuilder.state.v1");
+    if (!raw) {
+      throw new Error("Logo state was not persisted.");
+    }
+
+    return JSON.parse(raw).covers.map((cover) => ({
+      roll: cover.roll,
+      pitch: cover.pitch,
+      yaw: cover.yaw,
+    }));
+  });
 }
 
 async function longPress(locator, page) {
@@ -243,6 +266,22 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await dragLogo(page);
   const afterDrag = await canvasStats(page);
   assert(beforeDrag.checksum !== afterDrag.checksum, "Dragging selected layers changes rendered pixels.");
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await page.getByRole("button", { name: "Add cover" }).click();
+  await dragLogo(page, { dx: 100, dy: 0 });
+  let angles = await coverAngles(page);
+  assert(angles.every((cover) => cover.pitch > 300 && cover.roll === 0), "Dragging right pitches covers right.");
+
+  await dragLogo(page, { dx: 0, dy: 100 });
+  angles = await coverAngles(page);
+  assert(angles.every((cover) => cover.roll > 300), "Dragging down rolls covers down.");
+
+  await dragLogo(page, { dx: 100, dy: 0, shift: true });
+  angles = await coverAngles(page);
+  assert(angles.every((cover) => cover.yaw > 300), "Shift-dragging right yaws covers right.");
 
   await page.getByRole("button", { name: "Base sphere" }).click();
   assert((await page.locator(".layer-swatch.selected").count()) === 0, "Base sphere clears selection when every cover is selected.");
