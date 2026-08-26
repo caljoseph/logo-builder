@@ -67,8 +67,8 @@ function identityRotation() {
 
 function screenAxisRotation({ xDegrees = 0, yDegrees = 0, zDegrees = 0 }) {
   return modelAxisRotation({
-    xDegrees: -xDegrees,
-    yDegrees: -yDegrees,
+    xDegrees,
+    yDegrees,
     zDegrees: -zDegrees,
   });
 }
@@ -398,7 +398,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
 
   await dragLogo(page, { dx: 100, dy: 0 });
   let rotations = await coverRotations(page);
-  let expectedRotation = modelAxisRotation({ yDegrees: -100 * DRAG_DEGREES_PER_PIXEL });
+  let expectedRotation = modelAxisRotation({ yDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging right applies only screen y-axis rotation."));
 
   await page.evaluate(() => localStorage.clear());
@@ -408,7 +408,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
 
   await dragLogo(page, { dx: 0, dy: 100 });
   rotations = await coverRotations(page);
-  expectedRotation = modelAxisRotation({ xDegrees: -100 * DRAG_DEGREES_PER_PIXEL });
+  expectedRotation = modelAxisRotation({ xDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging down applies only screen x-axis rotation."));
 
   await page.evaluate(() => localStorage.clear());
@@ -427,7 +427,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.waitForSelector("[data-logo-canvas]");
   await dragLogo(page, { dx: 80, dy: 0 });
   rotations = await coverRotations(page);
-  expectedRotation = multiplyMatrices(modelAxisRotation({ yDegrees: -80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
+  expectedRotation = multiplyMatrices(modelAxisRotation({ yDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Horizontal drag pre-multiplies screen y-axis rotation."));
 
   await setCoverRotations(page, preRotated);
@@ -435,7 +435,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.waitForSelector("[data-logo-canvas]");
   await dragLogo(page, { dx: 0, dy: 80 });
   rotations = await coverRotations(page);
-  expectedRotation = multiplyMatrices(modelAxisRotation({ xDegrees: -80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
+  expectedRotation = multiplyMatrices(modelAxisRotation({ xDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
   rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Vertical drag pre-multiplies screen x-axis rotation."));
 
   await setCoverRotations(page, preRotated);

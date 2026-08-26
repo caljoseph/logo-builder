@@ -20,12 +20,12 @@ export function screenAxisRotation({
   yDegrees = 0,
   zDegrees = 0,
 }: ScreenAxisRotation): Matrix3 {
-  // Browser gestures are described in screen coordinates: +x right, +y down,
-  // +z toward the viewer. The renderer uses +y up, so screen-positive
-  // rotations are the opposite signed model-space rotations.
+  // Browser gestures are described in screen coordinates. Horizontal and
+  // vertical drags map directly to the model x/y rotation signs, while a
+  // clockwise screen twist maps to negative model z.
   return modelAxisRotation({
-    xDegrees: -xDegrees,
-    yDegrees: -yDegrees,
+    xDegrees,
+    yDegrees,
     zDegrees: -zDegrees,
   });
 }
