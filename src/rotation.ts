@@ -7,6 +7,12 @@ export type ScreenAxisRotation = {
   zDegrees?: number;
 };
 
+export type EulerAngles = {
+  roll: number;
+  pitch: number;
+  yaw: number;
+};
+
 export function identityRotation(): Matrix3 {
   return [
     [1, 0, 0],
@@ -67,7 +73,7 @@ function modelAxisRotation({
   ];
 }
 
-export function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0): Matrix3 {
+export function eulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0): Matrix3 {
   const roll = degreesToRadians(rollDeg);
   const pitch = degreesToRadians(pitchDeg);
   const yaw = degreesToRadians(yawDeg);
@@ -90,6 +96,31 @@ export function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0): Matr
   return multiplyMatrices(multiplyMatrices(rz, ry), rx);
 }
 
+export function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0): Matrix3 {
+  return eulerToMatrix(rollDeg, pitchDeg, yawDeg);
+}
+
+export function matrixToEuler(matrix: Matrix3): EulerAngles {
+  const normalized = normalizeRotation(matrix);
+  const pitch = Math.asin(clamp(-normalized[2][0], -1, 1));
+  const cosPitch = Math.cos(pitch);
+  let roll = 0;
+  let yaw = 0;
+
+  if (Math.abs(cosPitch) > 1e-7) {
+    roll = Math.atan2(normalized[2][1], normalized[2][2]);
+    yaw = Math.atan2(normalized[1][0], normalized[0][0]);
+  } else {
+    yaw = Math.atan2(-normalized[0][1], normalized[1][1]);
+  }
+
+  return {
+    roll: normalizeDegrees(radiansToDegrees(roll)),
+    pitch: normalizeDegrees(radiansToDegrees(pitch)),
+    yaw: normalizeDegrees(radiansToDegrees(yaw)),
+  };
+}
+
 export function multiplyMatrices(a: Matrix3, b: Matrix3): Matrix3 {
   return a.map((row) =>
     b[0].map((_, column) => row[0] * b[0][column] + row[1] * b[1][column] + row[2] * b[2][column]),
@@ -110,6 +141,10 @@ export function transpose(matrix: Matrix3): Matrix3 {
     [matrix[0][1], matrix[1][1], matrix[2][1]],
     [matrix[0][2], matrix[1][2], matrix[2][2]],
   ];
+}
+
+export function inverseRotation(matrix: Matrix3): Matrix3 {
+  return transpose(matrix);
 }
 
 export function normalizeRotation(matrix: Matrix3): Matrix3 {
@@ -163,6 +198,19 @@ function normalize(vector: Vec3, fallback: Vec3): Vec3 {
   return [vector[0] / length, vector[1] / length, vector[2] / length];
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeDegrees(degrees: number): number {
+  const normalized = ((degrees % 360) + 360) % 360;
+  return normalized < 1e-10 || 360 - normalized < 1e-10 ? 0 : normalized;
+}
+
 function degreesToRadians(degrees: number): number {
   return (degrees * Math.PI) / 180;
+}
+
+function radiansToDegrees(radians: number): number {
+  return (radians * 180) / Math.PI;
 }

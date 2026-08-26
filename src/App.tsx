@@ -1,6 +1,7 @@
 import { Check, Plus, Save, Trash2, X } from "lucide-react";
 import {
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useLayoutEffect,
@@ -10,12 +11,29 @@ import {
 } from "react";
 import { createCover, loadLogoState, saveLogoState } from "./storage";
 import { exportLogoPng, renderLogoToCanvas } from "./logoRenderer";
-import { multiplyMatrices, normalizeRotation, screenAxisRotation, type Matrix3 } from "./rotation";
+import {
+  eulerToMatrix,
+  inverseRotation,
+  matrixToEuler,
+  multiplyMatrices,
+  normalizeRotation,
+  screenAxisRotation,
+  type EulerAngles,
+  type Matrix3,
+} from "./rotation";
 import type { CoverLayer, EditableLayer, LogoState } from "./types";
 
 const LONG_PRESS_MS = 480;
 const TAP_MOVE_LIMIT = 8;
 const DRAG_DEGREES_PER_PIXEL = 0.45;
+const EULER_FIELDS = [
+  { key: "roll", label: "Roll" },
+  { key: "pitch", label: "Pitch" },
+  { key: "yaw", label: "Yaw" },
+] as const;
+const BLANK_EULER_DRAFTS = { roll: "", pitch: "", yaw: "" };
+
+type EulerField = (typeof EULER_FIELDS)[number]["key"];
 
 type LayerSwatchProps = {
   kind: "base" | "cover";
@@ -34,12 +52,21 @@ type PointerPoint = {
   y: number;
 };
 
+type EulerDisplayOverride = {
+  coverId: string;
+  rotation: Matrix3;
+  values: EulerAngles;
+};
+
 export default function App() {
   const [logoState, setLogoState] = useState<LogoState>(() => loadLogoState());
   const [editingLayer, setEditingLayer] = useState<EditableLayer | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [filename, setFilename] = useState("logo.png");
   const [canvasSize, setCanvasSize] = useState(0);
+  const [activeEulerField, setActiveEulerField] = useState<EulerField | null>(null);
+  const [eulerDrafts, setEulerDrafts] = useState<Record<EulerField, string>>(BLANK_EULER_DRAFTS);
+  const [eulerDisplayOverride, setEulerDisplayOverride] = useState<EulerDisplayOverride | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const logoShellRef = useRef<HTMLDivElement | null>(null);
   const activePointersRef = useRef<Map<number, PointerPoint>>(new Map());
@@ -49,10 +76,48 @@ export default function App() {
     () => logoState.covers.filter((cover) => cover.selected).length,
     [logoState.covers],
   );
+  const selectedReferenceCover = useMemo(
+    () => logoState.covers.find((cover) => cover.selected) ?? null,
+    [logoState.covers],
+  );
+  const referenceEuler = useMemo(() => {
+    if (!selectedReferenceCover) {
+      return null;
+    }
+
+    if (
+      eulerDisplayOverride?.coverId === selectedReferenceCover.id &&
+      matricesAreClose(eulerDisplayOverride.rotation, selectedReferenceCover.rotation)
+    ) {
+      return eulerDisplayOverride.values;
+    }
+
+    return matrixToEuler(selectedReferenceCover.rotation);
+  }, [eulerDisplayOverride, selectedReferenceCover]);
+  const eulerDisplayValues = useMemo(
+    () => ({
+      roll: referenceEuler ? formatEulerAngle(referenceEuler.roll) : "",
+      pitch: referenceEuler ? formatEulerAngle(referenceEuler.pitch) : "",
+      yaw: referenceEuler ? formatEulerAngle(referenceEuler.yaw) : "",
+    }),
+    [referenceEuler],
+  );
 
   useEffect(() => {
     saveLogoState(logoState);
   }, [logoState]);
+
+  useEffect(() => {
+    if (!selectedReferenceCover) {
+      setActiveEulerField(null);
+      setEulerDrafts(BLANK_EULER_DRAFTS);
+      return;
+    }
+
+    if (!activeEulerField) {
+      setEulerDrafts(eulerDisplayValues);
+    }
+  }, [activeEulerField, eulerDisplayValues, selectedReferenceCover]);
 
   useLayoutEffect(() => {
     const shell = logoShellRef.current;
@@ -182,6 +247,7 @@ export default function App() {
   }
 
   function rotateSelected(deltaRotation: Matrix3) {
+    setEulerDisplayOverride(null);
     setLogoState((current) => {
       if (!current.covers.some((cover) => cover.selected)) {
         return current;
@@ -199,6 +265,65 @@ export default function App() {
         ),
       };
     });
+  }
+
+  function commitEulerField(field: EulerField, rawValue: string) {
+    const trimmedValue = rawValue.trim();
+    const parsed = Number(trimmedValue);
+
+    if (!selectedReferenceCover || trimmedValue === "" || !Number.isFinite(parsed)) {
+      setActiveEulerField(null);
+      setEulerDrafts(eulerDisplayValues);
+      return;
+    }
+
+    const boundedValue = clamp(parsed, 0, 360);
+    const currentEuler = matrixToEuler(selectedReferenceCover.rotation);
+    const nextEuler = { ...currentEuler, [field]: boundedValue };
+    const targetRotation = normalizeRotation(eulerToMatrix(nextEuler.roll, nextEuler.pitch, nextEuler.yaw));
+    const deltaRotation = multiplyMatrices(targetRotation, inverseRotation(selectedReferenceCover.rotation));
+
+    setLogoState((current) => ({
+      ...current,
+      covers: current.covers.map((cover) =>
+        cover.selected
+          ? {
+              ...cover,
+              rotation: normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation)),
+            }
+          : cover,
+      ),
+    }));
+    setEulerDisplayOverride({
+      coverId: selectedReferenceCover.id,
+      rotation: targetRotation,
+      values: nextEuler,
+    });
+    setActiveEulerField(null);
+  }
+
+  function handleEulerFocus(field: EulerField) {
+    if (!selectedReferenceCover) {
+      return;
+    }
+
+    setActiveEulerField(field);
+    setEulerDrafts((current) => ({ ...current, [field]: eulerDisplayValues[field] }));
+  }
+
+  function handleEulerChange(field: EulerField, value: string) {
+    setEulerDrafts((current) => ({ ...current, [field]: value }));
+  }
+
+  function handleEulerBlur(field: EulerField) {
+    commitEulerField(field, eulerDrafts[field]);
+  }
+
+  function handleEulerKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
   }
 
   function handleLogoPointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
@@ -317,6 +442,27 @@ export default function App() {
           />
         </div>
       </section>
+
+      {!editingLayer && !saveModalOpen && (
+        <div className="euler-controls" aria-label="Euler rotation">
+          {EULER_FIELDS.map(({ key, label }) => (
+            <label key={key} className="euler-field">
+              <span>{label}</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={selectedReferenceCover ? (activeEulerField === key ? eulerDrafts[key] : eulerDisplayValues[key]) : ""}
+                disabled={!selectedReferenceCover}
+                onFocus={() => handleEulerFocus(key)}
+                onChange={(event) => handleEulerChange(key, event.target.value)}
+                onBlur={() => handleEulerBlur(key)}
+                onKeyDown={handleEulerKeyDown}
+                aria-label={label}
+              />
+            </label>
+          ))}
+        </div>
+      )}
 
       <button className="icon-button save-button" type="button" onClick={openSaveModal} aria-label="Save logo">
         <Save aria-hidden="true" size={24} strokeWidth={2.35} />
@@ -508,6 +654,20 @@ function shortestAngleDelta(previous: number, next: number): number {
 
 function radiansToDegrees(radians: number): number {
   return (radians * 180) / Math.PI;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatEulerAngle(value: number): string {
+  return clamp(value, 0, 360).toFixed(1);
+}
+
+function matricesAreClose(first: Matrix3, second: Matrix3): boolean {
+  return first.every((row, rowIndex) =>
+    row.every((value, columnIndex) => Math.abs(value - second[rowIndex][columnIndex]) < 0.000_001),
+  );
 }
 
 function filenameStemEnd(value: string): number {

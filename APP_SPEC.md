@@ -6,7 +6,7 @@ This document is the source of truth for the app. Any future change to the produ
 
 Build an extremely simple installable PWA for creating a logo: a centered 2D image of a sphere with one or more realistic baseball-cover halves layered over it.
 
-The app is a visual instrument, not a form-driven editor. The main screen should contain no visible text.
+The app is a visual instrument with one compact numeric rotation editor. Visible main-screen text is limited to the `Roll`, `Pitch`, and `Yaw` field labels and values.
 
 ## Product Shape
 
@@ -24,6 +24,7 @@ The main screen has only these visible elements:
 - A top row of layer controls.
 - A plus icon for adding a cover layer.
 - The logo preview centered on the screen.
+- Compact `Roll`, `Pitch`, and `Yaw` fields starting at the bottom-left of the screen.
 - A save icon near the bottom-right of the screen.
 
 No other visible text is allowed on the main screen.
@@ -142,6 +143,47 @@ When no cover layers are selected:
 
 - Dragging the logo does nothing.
 
+## Roll, Pitch, And Yaw Fields
+
+The bottom-left rotation editor contains three visible numeric fields ordered `Roll`, `Pitch`, `Yaw`.
+
+These fields are an absolute Euler editor and viewer. They are intentionally separate from drag dynamics:
+
+- The displayed values come from decomposing the deepest selected cover layer's stored rotation matrix.
+- The Euler convention is the same as the original reference math: `Rz * Ry * Rx`.
+- Editing these fields rebuilds an absolute Euler target matrix; it does not mutate incremental drag values.
+- Interactive dragging and twisting continue to use screen-axis incremental matrix deltas.
+
+When no cover layer exists or no cover layer is selected:
+
+- All three fields are blank.
+- All three fields are disabled.
+
+When one or more cover layers are selected:
+
+- The deepest selected cover layer is the reference layer shown in the fields.
+- Values display with one decimal place.
+- Values are kept in the inclusive range `0.0` through `360.0`.
+- Displaying any valid equivalent Euler decomposition is acceptable.
+
+Editing behavior:
+
+- Typing into a field does not update the logo immediately.
+- Pressing `Enter` commits the field.
+- Blurring the field commits the field.
+- Empty or invalid input reverts to the current live value.
+- Values below `0` commit as `0.0`.
+- Values above `360` commit as `360.0`.
+
+When a field commit changes the deepest selected cover's absolute Euler orientation, all selected cover layers receive the same rotation delta:
+
+```text
+delta = targetReferenceRotation * inverse(currentReferenceRotation)
+nextSelectedRotation = normalize(delta * currentSelectedRotation)
+```
+
+This makes the reference layer land on the requested absolute roll, pitch, and yaw while preserving the relative orientations among all selected covers. Unselected covers do not move.
+
 ## Baseball Cover Math
 
 The cover shape should match the realistic seam math below. The TypeScript implementation does not need to copy this code exactly, but the mathematics and visible output should match it closely.
@@ -188,7 +230,7 @@ The save modal contains:
 - A circular confirm button with a check mark.
 - A small icon-only `X` close button.
 
-The only visible text in the app is the filename text shown in the save modal.
+The only visible text in the save modal is the filename text.
 
 When the save modal opens:
 
@@ -223,9 +265,9 @@ The app should tolerate missing, malformed, or older persisted data by falling b
 
 ## Visual Constraints
 
-- The main screen has no visible text.
+- Main-screen text is limited to the `Roll`, `Pitch`, and `Yaw` rotation fields.
 - The color modal has no visible text.
-- The only visible text anywhere in the app is the filename in the save modal.
+- The save modal's only visible text is the filename.
 - Do not use decorative text, headings, help copy, tooltips with visible text, or visible keyboard shortcut hints.
 - Use icon-only controls where controls are needed.
 - Keep the visual design minimal and white.
@@ -242,7 +284,14 @@ Verification should:
 - Use Playwright.
 - Capture mobile and desktop screenshots into `verification-output/`.
 - Verify the initial canvas is not blank after rendering.
-- Verify the main screen has no visible text.
+- Verify the main screen's only visible text is the `Roll`, `Pitch`, and `Yaw` rotation editor.
+- Verify initial selected cover fields show `0.0`.
+- Verify fields are blank and disabled when no cover layer is selected.
+- Verify dragging a selected cover updates the displayed Euler values.
+- Verify typing into an Euler field does not mutate the logo before `Enter` or blur.
+- Verify `Enter` and blur both commit Euler edits.
+- Verify Euler field commits clamp below `0` to `0.0` and above `360` to `360.0`.
+- Verify Euler field edits apply the same matrix delta to all selected covers and do not move unselected covers.
 - Add a cover layer and confirm it starts selected.
 - Rotate a selected layer and verify rendered pixels change.
 - Verify dragging with no selected layers does not change rendered pixels.

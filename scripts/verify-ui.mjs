@@ -107,7 +107,7 @@ function modelAxisRotation({ xDegrees = 0, yDegrees = 0, zDegrees = 0 }) {
   ];
 }
 
-function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0) {
+function eulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0) {
   const roll = (rollDeg * Math.PI) / 180;
   const pitch = (pitchDeg * Math.PI) / 180;
   const yaw = (yawDeg * Math.PI) / 180;
@@ -130,10 +130,22 @@ function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0) {
   return multiplyMatrices(multiplyMatrices(rz, ry), rx);
 }
 
+function legacyEulerToMatrix(rollDeg = 0, pitchDeg = 0, yawDeg = 0) {
+  return eulerToMatrix(rollDeg, pitchDeg, yawDeg);
+}
+
 function multiplyMatrices(a, b) {
   return a.map((row) =>
     b[0].map((_, column) => row[0] * b[0][column] + row[1] * b[1][column] + row[2] * b[2][column]),
   );
+}
+
+function transpose(matrix) {
+  return [
+    [matrix[0][0], matrix[1][0], matrix[2][0]],
+    [matrix[0][1], matrix[1][1], matrix[2][1]],
+    [matrix[0][2], matrix[1][2], matrix[2][2]],
+  ];
 }
 
 function maxMatrixDifference(a, b) {
@@ -246,6 +258,44 @@ async function visibleText(page) {
   });
 }
 
+async function visibleTextWithin(page, selector) {
+  return page.evaluate((rootSelector) => {
+    const root = document.querySelector(rootSelector);
+
+    if (!root) {
+      throw new Error(`Could not find ${rootSelector}.`);
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const visible = [];
+    let current = walker.nextNode();
+
+    while (current) {
+      const text = current.textContent?.trim();
+      const parent = current.parentElement;
+
+      if (text && parent) {
+        const style = window.getComputedStyle(parent);
+        const rect = parent.getBoundingClientRect();
+
+        if (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) > 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        ) {
+          visible.push(text);
+        }
+      }
+
+      current = walker.nextNode();
+    }
+
+    return visible;
+  }, selector);
+}
+
 async function canvasStats(page) {
   return page.evaluate(() => {
     const canvas = document.querySelector("[data-logo-canvas]");
@@ -318,6 +368,17 @@ async function coverRotations(page) {
   });
 }
 
+async function coverStates(page) {
+  return page.evaluate(() => {
+    const raw = localStorage.getItem("logoBuilder.state.v1");
+    if (!raw) {
+      throw new Error("Logo state was not persisted.");
+    }
+
+    return JSON.parse(raw).covers;
+  });
+}
+
 async function setCoverRotations(page, rotation) {
   await page.evaluate((nextRotation) => {
     const raw = localStorage.getItem("logoBuilder.state.v1");
@@ -329,6 +390,109 @@ async function setCoverRotations(page, rotation) {
     state.covers = state.covers.map((cover) => ({ ...cover, rotation: nextRotation }));
     localStorage.setItem("logoBuilder.state.v1", JSON.stringify(state));
   }, rotation);
+}
+
+async function setCoverFixtures(page, covers) {
+  await page.evaluate((nextCovers) => {
+    const raw = localStorage.getItem("logoBuilder.state.v1");
+    if (!raw) {
+      throw new Error("Logo state was not persisted.");
+    }
+
+    const state = JSON.parse(raw);
+    state.covers = nextCovers;
+    localStorage.setItem("logoBuilder.state.v1", JSON.stringify(state));
+  }, covers);
+}
+
+async function eulerFieldValue(page, label) {
+  return page.getByRole("textbox", { name: label }).inputValue();
+}
+
+async function assertEulerFieldValues(page, expected, message) {
+  const actual = {
+    Roll: await eulerFieldValue(page, "Roll"),
+    Pitch: await eulerFieldValue(page, "Pitch"),
+    Yaw: await eulerFieldValue(page, "Yaw"),
+  };
+
+  assert(JSON.stringify(actual) === JSON.stringify(expected), `${message} Expected ${JSON.stringify(expected)} but found ${JSON.stringify(actual)}.`);
+}
+
+async function verifyEulerEditor(page) {
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await assertEulerFieldValues(page, { Roll: "0.0", Pitch: "0.0", Yaw: "0.0" }, "Initial Euler fields show the selected cover rotation.");
+
+  const rollInput = page.getByRole("textbox", { name: "Roll" });
+  const pitchInput = page.getByRole("textbox", { name: "Pitch" });
+  const yawInput = page.getByRole("textbox", { name: "Yaw" });
+  const beforeDraft = await canvasStats(page);
+  await rollInput.fill("45");
+  const afterDraft = await canvasStats(page);
+  assert(beforeDraft.checksum === afterDraft.checksum, "Typing in an Euler field does not mutate the logo before commit.");
+  await rollInput.press("Enter");
+  await assertEulerFieldValues(page, { Roll: "45.0", Pitch: "0.0", Yaw: "0.0" }, "Enter commits an Euler field edit.");
+  let [rotation] = await coverRotations(page);
+  assertMatrixClose(rotation, eulerToMatrix(45, 0, 0), "Enter commit applies the absolute Euler rotation.");
+
+  await pitchInput.fill("30");
+  await pitchInput.evaluate((input) => input.blur());
+  await assertEulerFieldValues(page, { Roll: "45.0", Pitch: "30.0", Yaw: "0.0" }, "Blur commits an Euler field edit.");
+  [rotation] = await coverRotations(page);
+  assertMatrixClose(rotation, eulerToMatrix(45, 30, 0), "Blur commit applies the absolute Euler rotation.");
+
+  await pitchInput.fill("-20");
+  await pitchInput.press("Enter");
+  assert((await eulerFieldValue(page, "Pitch")) === "0.0", "Euler input clamps values below 0.");
+
+  await yawInput.fill("720");
+  await yawInput.press("Enter");
+  assert((await eulerFieldValue(page, "Yaw")) === "360.0", "Euler input clamps values above 360.");
+
+  await rollInput.fill("");
+  await rollInput.press("Enter");
+  assert((await eulerFieldValue(page, "Roll")) === "45.0", "Empty Euler input reverts to the current live value.");
+
+  await dragLogo(page, { dx: 0, dy: 40 });
+  assert((await eulerFieldValue(page, "Roll")) !== "45.0", "Dragging a selected cover updates the displayed Euler values.");
+
+  await page.getByRole("button", { name: "Cover 1" }).click();
+  await assertEulerFieldValues(page, { Roll: "", Pitch: "", Yaw: "" }, "Euler fields are blank when no cover is selected.");
+  await Promise.all([
+    expectDisabled(page, "Roll"),
+    expectDisabled(page, "Pitch"),
+    expectDisabled(page, "Yaw"),
+  ]);
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  const firstRotation = eulerToMatrix(10, 20, 30);
+  const secondRotation = eulerToMatrix(35, 50, 65);
+  const thirdRotation = eulerToMatrix(80, 95, 110);
+  await setCoverFixtures(page, [
+    { id: "deep", color: "#000000", alpha: 1, rotation: firstRotation, selected: true },
+    { id: "surface", color: "#444444", alpha: 0.8, rotation: secondRotation, selected: true },
+    { id: "still", color: "#888888", alpha: 0.6, rotation: thirdRotation, selected: false },
+  ]);
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
+  await assertEulerFieldValues(page, { Roll: "10.0", Pitch: "20.0", Yaw: "30.0" }, "Deepest selected cover drives the Euler fields.");
+
+  await rollInput.fill("80");
+  await rollInput.press("Enter");
+  const covers = await coverStates(page);
+  const targetRotation = eulerToMatrix(80, 20, 30);
+  const deltaRotation = multiplyMatrices(targetRotation, transpose(firstRotation));
+  assertMatrixClose(covers[0].rotation, targetRotation, "Euler edit lands the deepest selected cover on the absolute target.");
+  assertMatrixClose(covers[1].rotation, multiplyMatrices(deltaRotation, secondRotation), "Euler edit applies the same delta to another selected cover.");
+  assertMatrixClose(covers[2].rotation, thirdRotation, "Euler edit does not move unselected covers.");
+}
+
+async function expectDisabled(page, label) {
+  assert(await page.getByRole("textbox", { name: label }).isDisabled(), `${label} field is disabled.`);
 }
 
 async function seededDragChecksum(page, rotation, dragOptions) {
@@ -376,11 +540,20 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await page.waitForSelector("[data-logo-canvas]");
   await page.screenshot({ path: outputPath(`${screenshotPrefix}-main.png`), fullPage: true });
 
-  assert((await visibleText(page)).length === 0, "Main screen has no visible text.");
+  assert(
+    JSON.stringify(await visibleText(page)) === JSON.stringify(["Roll", "Pitch", "Yaw"]),
+    "Main screen text is limited to the Euler field labels.",
+  );
+  await assertEulerFieldValues(page, { Roll: "0.0", Pitch: "0.0", Yaw: "0.0" }, "Initial Euler fields show the selected cover rotation.");
 
   const initial = await canvasStats(page);
   assert(initial.width > 0 && initial.height > 0, "Canvas has a rendered pixel buffer.");
   assert(initial.darkPixels > 1000, "Initial logo render contains visible cover pixels.");
+
+  await verifyEulerEditor(page);
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-logo-canvas]");
 
   logStep(`${screenshotPrefix}: add and rotate covers`);
   await page.getByRole("button", { name: "Add cover" }).click();
@@ -474,7 +647,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   logStep(`${screenshotPrefix}: open color modal`);
   await longPress(page.getByRole("button", { name: "Cover 2" }), page);
   await page.waitForSelector(".color-modal");
-  assert((await visibleText(page)).length === 0, "Color modal has no visible text.");
+  assert((await visibleTextWithin(page, ".color-modal")).length === 0, "Color modal has no visible text.");
   await page.getByRole("slider", { name: "Alpha" }).fill("0.42");
   const previewAlpha = await page.locator(".color-input-shell").evaluate((element) =>
     Number(window.getComputedStyle(element).getPropertyValue("--edit-alpha")),

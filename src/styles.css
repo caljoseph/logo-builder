@@ -179,6 +179,45 @@ input:focus-visible {
   height: 52px;
 }
 
+.euler-controls {
+  position: fixed;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  max-width: calc(100vw - 96px);
+}
+
+.euler-field {
+  display: grid;
+  gap: 4px;
+  width: 58px;
+  color: var(--ink);
+  font-size: 0.64rem;
+  line-height: 1;
+}
+
+.euler-field input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 6px;
+  color: var(--ink);
+  background: #ffffff;
+  font-size: 0.82rem;
+  text-align: center;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, 0.06);
+}
+
+.euler-field input:disabled {
+  color: transparent;
+  background: #ffffff;
+  cursor: default;
+}
+
 .modal-layer {
   position: fixed;
   inset: 0;
@@ -307,6 +346,21 @@ input:focus-visible {
   .layer-row {
     gap: 10px;
     padding-right: 66px;
+  }
+
+  .euler-controls {
+    gap: 6px;
+    max-width: calc(100vw - 88px);
+  }
+
+  .euler-field {
+    width: 52px;
+    font-size: 0.58rem;
+  }
+
+  .euler-field input {
+    height: 32px;
+    font-size: 0.75rem;
   }
 
   .logo-shell {
