@@ -52,6 +52,26 @@ export function renderLogo(
     drawRectPaint(context, 0, 0, width, height, state.background);
   }
 
+  const layerCanvas = context.canvas.ownerDocument.createElement("canvas");
+  layerCanvas.width = width;
+  layerCanvas.height = height;
+  const layerContext = layerCanvas.getContext("2d");
+
+  if (!layerContext) {
+    return;
+  }
+
+  renderLogoLayers(layerContext, state, centerX, centerY, radius);
+  context.drawImage(layerCanvas, 0, 0);
+}
+
+function renderLogoLayers(
+  context: CanvasRenderingContext2D,
+  state: LogoState,
+  centerX: number,
+  centerY: number,
+  radius: number,
+): void {
   drawCirclePaint(context, centerX, centerY, radius, state.base);
 
   if (state.base.lattice) {

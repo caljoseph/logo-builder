@@ -649,6 +649,12 @@ async function longPress(locator, page) {
   await page.mouse.up();
 }
 
+async function doublePress(locator, page) {
+  await locator.click();
+  await page.waitForTimeout(80);
+  await locator.click();
+}
+
 async function verifyLegacyMigration(page) {
   await page.goto(baseUrl);
   await page.evaluate(() => {
@@ -670,6 +676,15 @@ async function verifyLegacyMigration(page) {
   assert(JSON.stringify(state.stack) === JSON.stringify([{ kind: "cover", id: "legacy-cover" }]), "Missing stack rebuilds from cover order.");
 }
 
+async function verifyDoublePressModal(page) {
+  await resetApp(page);
+  assert((await selectedCount(page)) === 1, "Initial selected count is ready for double-press check.");
+  await doublePress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await page.waitForSelector(".color-modal");
+  assert((await selectedCount(page)) === 1, "Double-press toggles twice and leaves selection where it started.");
+  await page.getByRole("button", { name: "Close" }).click();
+}
+
 async function verifySelectionAndBase(page) {
   await resetApp(page);
   assert(
@@ -683,6 +698,7 @@ async function verifySelectionAndBase(page) {
   assert(state.base.selected === true && state.covers[0].selected === true, "Background swatch selects all rotatable layers.");
   assert((await selectedCount(page)) === 2, "Background itself is not visually selected.");
 
+  await page.waitForTimeout(360);
   await page.getByRole("button", { name: "Background" }).click();
   state = await appState(page);
   assert(state.base.selected === false && state.covers[0].selected === false, "Background swatch clears all rotatable selections.");
@@ -987,22 +1003,33 @@ async function verifyKnockoutAndExport(page, screenshotPrefix) {
 
   await resetApp(page);
   await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await page.locator(".color-modal input[type='color']").fill("#336699");
+  let state = await appState(page);
+  assert(state.covers[0].color === "#336699" && state.covers[0].colorMode === "normal", "Normal color selection stores the regular color.");
   assert((await page.locator(".color-input-shell.active").count()) === 1, "Normal color circle is highlighted in normal color mode.");
   assert((await page.locator(".transparent-color-button.active").count()) === 0, "Transparent color is not highlighted in normal color mode.");
   await page.getByRole("button", { name: "Transparent color" }).click();
   assert(await page.getByRole("slider", { name: "Alpha" }).isDisabled(), "Knockout disables the alpha slider.");
-  let state = await appState(page);
+  state = await appState(page);
   assert(state.covers[0].colorMode === "knockout" && state.covers[0].alpha === 1, "Knockout sets alpha to 1.");
+  assert(state.covers[0].color === "#336699", "Selecting knockout does not overwrite the saved regular color.");
   assert((await page.locator(".color-input-shell.active").count()) === 0, "Normal color circle is not highlighted in knockout color mode.");
   assert((await page.locator(".transparent-color-button.active").count()) === 1, "Transparent color is highlighted in knockout color mode.");
+  assert((await page.locator(".color-input-shell.knockout").count()) === 0, "Normal color circle does not adopt knockout styling.");
+  await page.locator(".color-input-shell").dispatchEvent("pointerdown");
+  state = await appState(page);
+  assert(state.covers[0].colorMode === "normal" && state.covers[0].color === "#336699", "Selecting the regular color circle clears knockout without changing the saved color.");
+  assert((await page.locator(".color-input-shell.active").count()) === 1, "Normal color circle is highlighted after selecting it.");
+  assert((await page.locator(".transparent-color-button.active").count()) === 0, "Selecting regular color deselects transparent color.");
+  await page.getByRole("button", { name: "Transparent color" }).click();
   await page.locator(".color-modal input[type='color']").fill("#123456");
   state = await appState(page);
   assert(state.covers[0].colorMode === "normal" && state.covers[0].alpha === 1, "Choosing a normal color leaves knockout with alpha 1.");
   assert(!(await page.getByRole("slider", { name: "Alpha" }).isDisabled()), "Normal color re-enables alpha.");
-  assert((await page.locator(".color-input-shell.knockout").count()) === 0, "Normal color removes knockout modal styling.");
+  assert((await page.locator(".transparent-color-button.active").count()) === 0, "Choosing a normal color deselects transparent color.");
   assert((await page.locator(".color-input-shell.active").count()) === 1, "Normal color circle is highlighted again after returning to normal color mode.");
   await page.getByRole("button", { name: "Transparent color" }).click();
-  assert((await page.locator(".color-input-shell.knockout").count()) === 1, "Knockout modal styling is discoverable.");
+  assert((await page.locator(".transparent-color-button.active").count()) === 1, "Knockout modal styling is discoverable.");
   await page.getByRole("button", { name: "Close" }).click();
   assert((await page.locator(".layer-swatch.knockout").count()) >= 1, "Knockout swatch styling is discoverable in the row.");
 
@@ -1010,6 +1037,15 @@ async function verifyKnockoutAndExport(page, screenshotPrefix) {
   await verifyExportAlphaRange(page, backgroundLayer({ color: "#ffffff", alpha: 0.5 }), 120, 140, "Background alpha 0.5 exports translucent pixels without baking in the checkerboard.");
   await verifyExportAlpha(page, backgroundLayer({ colorMode: "knockout", alpha: 1 }), 0, "Background knockout exports transparent corner pixels.");
   await verifyExportAlpha(page, backgroundLayer({ color: "#ffffff", alpha: 1 }), 255, "Opaque background exports opaque corner pixels.");
+
+  const knockoutExport = await exportPngForState(page, logoState({
+    background: backgroundLayer({ color: "#ff0000", alpha: 1 }),
+    base: baseLayer({ colorMode: "knockout", alpha: 1, selected: false }),
+    covers: [coverLayer("cover-1", { alpha: 0, selected: false })],
+    stack: [{ kind: "cover", id: "cover-1" }],
+  }));
+  const center = rgbaAt(knockoutExport, 512, 512);
+  assert(center.red > 240 && center.green < 20 && center.blue < 20 && center.alpha === 255, "Knockout layers preserve the editable background in exported PNGs.");
 }
 
 async function verifyExportAlpha(page, background, expectedCornerAlpha, message) {
@@ -1023,12 +1059,18 @@ async function verifyExportAlphaRange(page, background, minCornerAlpha, maxCorne
 }
 
 async function exportCornerAlpha(page, background) {
-  await setAppState(page, logoState({
+  const png = await exportPngForState(page, logoState({
     background,
     base: baseLayer({ alpha: 0 }),
     covers: [coverLayer("cover-1", { alpha: 0 })],
     stack: [{ kind: "cover", id: "cover-1" }],
   }));
+
+  return alphaAt(png, 0, 0);
+}
+
+async function exportPngForState(page, state) {
+  await setAppState(page, state);
   await page.getByRole("button", { name: "Save logo" }).click();
   await page.waitForSelector(".save-modal");
   const filenameInput = page.getByRole("textbox", { name: "Filename" });
@@ -1048,11 +1090,21 @@ async function exportCornerAlpha(page, background) {
 
   const png = PNG.sync.read(await readFile(downloadedPath));
   assert(png.width === 1024 && png.height === 1024, "Logo export is 1024x1024.");
-  return alphaAt(png, 0, 0);
+  return png;
 }
 
 function alphaAt(png, x, y) {
   return png.data[(png.width * y + x) * 4 + 3];
+}
+
+function rgbaAt(png, x, y) {
+  const index = (png.width * y + x) * 4;
+  return {
+    red: png.data[index],
+    green: png.data[index + 1],
+    blue: png.data[index + 2],
+    alpha: png.data[index + 3],
+  };
 }
 
 async function runMainFlowChecks(page, screenshotPrefix) {
@@ -1074,6 +1126,7 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   assert(initial.width > 0 && initial.height > 0, "Canvas has a rendered pixel buffer.");
   assert(initial.darkPixels > 1000, "Initial logo render contains visible cover pixels.");
 
+  await verifyDoublePressModal(page);
   await verifySelectionAndBase(page);
   await verifyEulerEditor(page);
   await verifyRotationGestures(page);

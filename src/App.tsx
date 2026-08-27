@@ -33,6 +33,7 @@ import type {
 } from "./types";
 
 const LONG_PRESS_MS = 480;
+const DOUBLE_PRESS_MS = 300;
 const TAP_MOVE_LIMIT = 8;
 const DRAG_DEGREES_PER_PIXEL = 0.45;
 const EULER_FIELDS = [
@@ -64,6 +65,7 @@ type LayerSwatchProps = {
 type LatticePreviewCircleProps = {
   lattice: LatticeLayer;
   onColorChange: (color: string) => void;
+  onSelectNormal: () => void;
 };
 
 type PointerPoint = {
@@ -262,7 +264,7 @@ export default function App() {
   }
 
   function updateEditingColorMode(colorMode: ColorMode) {
-    updateEditablePaint(colorMode === "knockout" ? { colorMode, alpha: 1 } : { colorMode, alpha: 1 });
+    updateEditablePaint(colorMode === "knockout" ? { colorMode, alpha: 1 } : { colorMode });
   }
 
   function updateEditablePaint(patch: Partial<PaintStyle>) {
@@ -642,16 +644,22 @@ export default function App() {
               <span className="modal-label">Color</span>
               <div className="paint-controls">
                 {editingLattice ? (
-                  <LatticePreviewCircle lattice={editingLattice} onColorChange={updateEditingColor} />
+                  <LatticePreviewCircle
+                    lattice={editingLattice}
+                    onColorChange={updateEditingColor}
+                    onSelectNormal={() => updateEditingColorMode("normal")}
+                  />
                 ) : (
                   <label
-                    className={`color-input-shell${editingPaint.colorMode === "normal" ? " active" : ""}${editingPaint.colorMode === "knockout" ? " knockout" : ""}`}
+                    className={`color-input-shell${editingPaint.colorMode === "normal" ? " active" : ""}`}
                     style={{ "--edit-color": editingPaint.color, "--edit-alpha": editingPaint.alpha } as CSSProperties}
+                    onPointerDown={() => updateEditingColorMode("normal")}
                   >
                     <input
                       className="color-input"
                       type="color"
                       value={editingPaint.color}
+                      onFocus={() => updateEditingColorMode("normal")}
                       onChange={(event) => updateEditingColor(event.target.value)}
                       aria-label="Color"
                     />
@@ -789,7 +797,7 @@ export default function App() {
   );
 }
 
-function LatticePreviewCircle({ lattice, onColorChange }: LatticePreviewCircleProps) {
+function LatticePreviewCircle({ lattice, onColorChange, onSelectNormal }: LatticePreviewCircleProps) {
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useLayoutEffect(() => {
@@ -823,14 +831,16 @@ function LatticePreviewCircle({ lattice, onColorChange }: LatticePreviewCirclePr
 
   return (
     <label
-      className={`color-input-shell lattice-preview-shell${lattice.colorMode === "normal" ? " active" : ""}${lattice.colorMode === "knockout" ? " knockout" : ""}`}
+      className={`color-input-shell lattice-preview-shell${lattice.colorMode === "normal" ? " active" : ""}`}
       style={{ "--edit-color": lattice.color, "--edit-alpha": lattice.alpha } as CSSProperties}
+      onPointerDown={onSelectNormal}
     >
       <canvas ref={previewCanvasRef} className="lattice-preview-canvas" aria-hidden="true" />
       <input
         className="color-input"
         type="color"
         value={lattice.color}
+        onFocus={onSelectNormal}
         onChange={(event) => onColorChange(event.target.value)}
         aria-label="Color"
       />
@@ -856,6 +866,7 @@ function LayerSwatch({
   layerKey,
 }: LayerSwatchProps) {
   const timerRef = useRef<number | null>(null);
+  const lastTapTimeRef = useRef(0);
   const startRef = useRef<{ x: number; y: number } | null>(null);
   const longPressedRef = useRef(false);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -887,6 +898,7 @@ function LayerSwatch({
     clearTimer();
     timerRef.current = window.setTimeout(() => {
       longPressedRef.current = true;
+      lastTapTimeRef.current = 0;
       onLongPress();
     }, LONG_PRESS_MS);
   }
@@ -912,7 +924,16 @@ function LayerSwatch({
     event.currentTarget.releasePointerCapture(event.pointerId);
 
     if (!wasLongPress && start && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= TAP_MOVE_LIMIT) {
-      onTap();
+      const now = window.performance.now();
+
+      if (lastTapTimeRef.current > 0 && now - lastTapTimeRef.current <= DOUBLE_PRESS_MS) {
+        lastTapTimeRef.current = 0;
+        onTap();
+        onLongPress();
+      } else {
+        lastTapTimeRef.current = now;
+        onTap();
+      }
     }
   }
 

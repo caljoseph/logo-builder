@@ -154,7 +154,7 @@ Transparent/knockout color behavior:
 
 - The alpha value is locked to `1`.
 - The alpha slider is disabled while transparent/knockout color mode is active.
-- The layer erases only pixels from layers below it in the stack.
+- The layer erases only pixels from drawable logo layers below it in the stack; it does not erase the editable background layer.
 - Layers above it still draw normally after it.
 - The knockout affects only the layer's visible drawn geometry.
 - For a base sphere or solid cover source, the filled visible shape punches through lower layers.
@@ -205,13 +205,15 @@ When a source layer's lattice toggle changes from off to on:
 - For a cover source, the source cover and new cover lattice layer both become selected.
 - Other existing selections are preserved.
 
-## Long-Press Editing
+## Modal Editing
 
-Long-pressing a swatch opens a modal for that layer.
+Long-pressing or double-pressing a swatch opens a modal for that layer.
 
 The modal must not open from a normal quick click.
 
 Pointer movement beyond the drag threshold cancels long-press opening.
+
+A double-press is two quick presses on the same swatch. Both presses perform that swatch's normal quick-tap selection behavior, and the second press also opens the modal. This means double-pressing a rotatable layer leaves its selection state where it was before the double-press started.
 
 The base sphere edit modal contains:
 
@@ -271,7 +273,7 @@ The color selector's visible swatch reflects both the current color and current 
 
 In a lattice modal, the large color selector circle renders a live full-sphere lattice preview using the lattice layer's current color mode, color, alpha, resolution, line width, intersection-dot setting, dot size, and rotation. This preview is not clipped by the source mask.
 
-The currently active color mode is visually highlighted. In normal color mode, the normal color circle is highlighted and the transparent/knockout swatch is not. In transparent/knockout color mode, the transparent/knockout swatch is highlighted and the normal color circle is not, but the normal color circle still shows the saved normal color unchanged.
+The currently active color mode is visually highlighted. In normal color mode, the normal color circle is highlighted and the transparent/knockout swatch is not. In transparent/knockout color mode, the transparent/knockout swatch is highlighted and the normal color circle is not, but the normal color circle still shows the saved normal color unchanged. Selecting the normal color circle switches back to normal color mode without changing the saved normal color. Selecting the transparent/knockout swatch switches to transparent/knockout color mode without changing the saved normal color.
 
 When the transparent/knockout color is selected, the color selector shows the standard checkerboard or diagonal-slash treatment, the alpha slider is set to `1`, and the alpha slider is disabled.
 
@@ -387,7 +389,7 @@ Rendering expectations:
 - Only draw portions visible from the front 2D snapshot.
 - In solid mode, build filled visible polygons using front-facing seam arcs and visible silhouette arcs.
 - In solid mode, draw the full circle in the rare case where the entire visible ball is one piece.
-- In transparent/knockout color mode, use the same visible filled geometry as solid mode, but erase already-rendered pixels instead of drawing color.
+- In transparent/knockout color mode, use the same visible filled geometry as solid mode, but erase already-rendered non-background logo pixels instead of drawing color.
 - Do not expose an invert toggle in the UI.
 
 ## Lattice Rendering
@@ -440,14 +442,14 @@ Rendering a lattice layer:
 - Clip the remaining projected path portions to the source layer's current visible mask.
 - In normal color mode, draw the surviving lattice path portions with the lattice layer's color, alpha, and line width.
 - In normal color mode, draw the source layer's current visible mask boundary as the cookie-cutter outline with the lattice layer's color, alpha, and line width.
-- In transparent/knockout color mode, use the same lattice path portions and cookie-cutter outline, but erase already-rendered pixels instead of drawing color.
+- In transparent/knockout color mode, use the same lattice path portions and cookie-cutter outline, but erase already-rendered non-background logo pixels instead of drawing color.
 - If the source mask has multiple visible pieces, draw the outline for each piece and clip lattice paths to the union of those pieces.
 - When intersection points are enabled, draw complete circular dots at visible icosphere vertices whose centers are inside the source mask.
 - Do not draw dots for intersections created by clipping lattice edges against the cookie-cutter outline.
 - In normal color mode, dot color and alpha match the lattice layer's color and alpha.
 - Dots are drawn after lattice lines and the cookie-cutter outline.
 - Dots are not clipped by the source mask; if a dot center is visible and inside the mask, the full circular dot is drawn.
-- In transparent/knockout color mode, enabled dots erase already-rendered pixels instead of drawing color.
+- In transparent/knockout color mode, enabled dots erase already-rendered non-background logo pixels instead of drawing color.
 
 ## Icosphere Preview Generator
 
@@ -560,15 +562,18 @@ Verification should:
 - Verify the background square swatch clears all rotatable layer selections when all rotatable layers are selected.
 - Verify the background layer is never visually shown as selected.
 - Verify the base sphere can be selected, deselected, rotated, edited, and shown as selected.
+- Verify color modals open from both long-press and double-press.
 - Verify every drawable layer can choose normal color mode or transparent/knockout color mode.
 - Verify choosing transparent/knockout color sets alpha to `1` and disables the alpha slider.
 - Verify switching from transparent/knockout color back to a normal color keeps alpha at `1` and re-enables the alpha slider.
 - Verify alpha `0` makes a layer invisible without erasing lower layers.
-- Verify transparent/knockout color erases only already-rendered lower layers and does not erase layers above it.
+- Verify transparent/knockout color erases only already-rendered lower logo layers, does not erase layers above it, and does not erase the editable background layer.
 - Verify transparent/knockout color affects only visible drawn geometry.
 - Verify transparent/knockout lattice layers erase only lattice lines, cookie-cutter outlines, and enabled intersection dots; lattice gaps do not erase lower layers.
 - Verify transparent/knockout swatches are discoverable in the layer row and color selector.
 - Verify the currently active color mode is visually highlighted in the color selector, and the inactive color mode is not highlighted.
+- Verify selecting transparent/knockout color does not change the saved regular color.
+- Verify selecting the regular color circle switches back to normal color mode and deselects transparent/knockout color without changing the saved regular color.
 - Verify each source layer defaults to lattice disabled.
 - Verify the base sphere and cover color modals can toggle lattice on and off.
 - Verify toggling lattice on creates a lattice layer with default resolution `320`, line width `3`, dots off, dot size `4`, and source color mode/color/alpha copied at creation time.
