@@ -1,6 +1,8 @@
 :root {
   color: #111111;
-  background: #ffffff;
+  background:
+    conic-gradient(#eeeeee 25%, #ffffff 0 50%, #eeeeee 0 75%, #ffffff 0)
+    0 0 / 18px 18px;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
@@ -11,6 +13,9 @@
   --soft-line: #f1f1f1;
   --surface: #ffffff;
   --shadow: 0 18px 48px rgba(17, 17, 17, 0.13);
+  --checkerboard:
+    conic-gradient(#eeeeee 25%, #ffffff 0 50%, #eeeeee 0 75%, #ffffff 0);
+  --checker-size: 18px 18px;
 }
 
 * {
@@ -27,7 +32,7 @@ body,
 body {
   margin: 0;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--checkerboard) 0 0 / var(--checker-size);
 }
 
 button,
@@ -42,6 +47,11 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
+button:disabled,
+input:disabled {
+  cursor: default;
+}
+
 button:focus-visible,
 input:focus-visible {
   outline: 2px solid rgba(17, 17, 17, 0.32);
@@ -51,17 +61,27 @@ input:focus-visible {
 .app-shell {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 100vh;
   min-height: 100dvh;
   overflow: hidden;
-  background: #ffffff;
-  padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+  background: var(--checkerboard) 0 0 / var(--checker-size);
+}
+
+.top-panel,
+.bottom-panel {
+  position: relative;
+  z-index: 5;
+  width: 100%;
+  background: var(--surface);
+}
+
+.top-panel {
+  padding: max(14px, env(safe-area-inset-top)) 14px 12px;
 }
 
 .layer-row {
   position: relative;
-  z-index: 5;
   display: flex;
   gap: 12px;
   align-items: center;
@@ -83,7 +103,7 @@ input:focus-visible {
   place-items: center;
   flex: 0 0 auto;
   color: var(--ink);
-  background: #ffffff;
+  background: var(--surface);
 }
 
 .icon-button {
@@ -99,7 +119,13 @@ input:focus-visible {
   width: 54px;
   height: 54px;
   border: 1px solid var(--line);
-  background: #ffffff;
+  background: var(--checkerboard) 0 0 / var(--checker-size);
+}
+
+.background-swatch {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
 }
 
 .base-swatch {
@@ -123,6 +149,7 @@ input:focus-visible {
   pointer-events: none;
 }
 
+.background-swatch::before,
 .base-swatch::before {
   position: absolute;
   inset: 5px;
@@ -130,6 +157,19 @@ input:focus-visible {
   background: var(--swatch-color);
   opacity: var(--swatch-alpha);
   content: "";
+}
+
+.layer-swatch.knockout::before,
+.transparent-color-button {
+  background:
+    linear-gradient(135deg, transparent 42%, #111111 43%, #111111 57%, transparent 58%),
+    var(--checkerboard);
+  background-size: 100% 100%, 14px 14px;
+}
+
+.cover-swatch.knockout canvas,
+.lattice-swatch.knockout canvas {
+  opacity: 0.28;
 }
 
 .layer-swatch.selected::after {
@@ -145,10 +185,27 @@ input:focus-visible {
 }
 
 .logo-zone {
+  position: relative;
   display: grid;
   place-items: center;
   min-height: 0;
-  padding: 12px 0 74px;
+  overflow: hidden;
+  background: var(--checkerboard) 0 0 / var(--checker-size);
+  padding: 12px 14px;
+}
+
+.logo-zone::before {
+  position: absolute;
+  inset: 0;
+  background: var(--preview-background-color);
+  opacity: var(--preview-background-alpha);
+  content: "";
+  pointer-events: none;
+}
+
+.logo-shell {
+  position: relative;
+  z-index: 1;
 }
 
 .logo-shell {
@@ -172,23 +229,25 @@ input:focus-visible {
 }
 
 .save-button {
-  position: fixed;
-  right: max(18px, env(safe-area-inset-right));
-  bottom: max(18px, env(safe-area-inset-bottom));
-  z-index: 10;
   width: 52px;
   height: 52px;
 }
 
+.bottom-panel {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+  justify-content: space-between;
+  min-height: 78px;
+  padding: 12px max(18px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+}
+
 .euler-controls {
-  position: fixed;
-  left: max(14px, env(safe-area-inset-left));
-  bottom: max(14px, env(safe-area-inset-bottom));
-  z-index: 10;
   display: flex;
   gap: 8px;
   align-items: end;
-  max-width: calc(100vw - 96px);
+  min-height: 45px;
+  max-width: calc(100vw - 106px);
 }
 
 .euler-field {
@@ -226,7 +285,9 @@ input:focus-visible {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(255, 255, 255, 0.62);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.58)),
+    var(--checkerboard) 0 0 / var(--checker-size);
   backdrop-filter: blur(10px);
 }
 
@@ -261,6 +322,53 @@ input:focus-visible {
   box-shadow: none;
 }
 
+.move-button {
+  position: absolute;
+  bottom: 10px;
+  width: 34px;
+  height: 34px;
+  box-shadow: none;
+}
+
+.move-left {
+  left: 10px;
+}
+
+.move-right {
+  right: 10px;
+}
+
+.icon-button:disabled {
+  opacity: 0.28;
+}
+
+.paint-controls {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.control-group {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
+.inline-control-group {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+}
+
+.modal-label {
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1;
+}
+
 .color-input-shell {
   position: relative;
   width: 82px;
@@ -268,8 +376,16 @@ input:focus-visible {
   border: 1px solid var(--line);
   border-radius: 999px;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--checkerboard) 0 0 / var(--checker-size);
   cursor: pointer;
+}
+
+.color-input-shell.knockout::before {
+  background:
+    linear-gradient(135deg, transparent 42%, #111111 43%, #111111 57%, transparent 58%),
+    var(--checkerboard);
+  background-size: 100% 100%, 14px 14px;
+  opacity: 1;
 }
 
 .color-input-shell::before {
@@ -280,14 +396,38 @@ input:focus-visible {
   opacity: var(--edit-alpha);
 }
 
+.lattice-preview-shell::before {
+  display: none;
+}
+
+.lattice-preview-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.lattice-preview-shell.knockout .lattice-preview-canvas {
+  opacity: 0.28;
+}
+
 .color-input-shell:focus-within {
   outline: 2px solid var(--ink);
+  outline-offset: 4px;
+}
+
+.color-input-shell.active {
+  outline: 2px solid #111111;
   outline-offset: 4px;
 }
 
 .color-input {
   position: absolute;
   inset: 0;
+  z-index: 2;
   width: 82px;
   height: 82px;
   border: 0;
@@ -311,14 +451,72 @@ input:focus-visible {
 }
 
 .alpha-input,
-.line-width-input {
+.line-width-input,
+.dot-size-input {
   width: 220px;
   max-width: 100%;
   accent-color: #111111;
 }
 
-.line-width-input:disabled {
+.alpha-input:disabled,
+.line-width-input:disabled,
+.dot-size-input:disabled {
   opacity: 0.32;
+}
+
+.transparent-color-button {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, 0.06);
+}
+
+.transparent-color-button.active {
+  outline: 2px solid #111111;
+  outline-offset: 4px;
+}
+
+.switch-control {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 30px;
+}
+
+.switch-control input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.switch-control span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, 0.06);
+  pointer-events: none;
+}
+
+.switch-control span::before {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #111111;
+  content: "";
+  transition: transform 150ms ease;
+}
+
+.switch-control input:checked + span::before {
+  transform: translateX(22px);
 }
 
 .lattice-select {
@@ -356,7 +554,7 @@ input:focus-visible {
 }
 
 @media (max-width: 520px) {
-  .app-shell {
+  .top-panel {
     padding-right: 10px;
     padding-left: 10px;
   }

@@ -1,5 +1,5 @@
-import type { CoverLayer, LogoState } from "./types";
-import { createIcosphere, isLatticeEnabled, sampleGreatCircleEdge } from "./icosphere";
+import type { ColorMode, CoverLayer, LatticeLayer, LogoState, PaintStyle, StackItem } from "./types";
+import { createIcosphere, sampleGreatCircleEdge } from "./icosphere";
 import { multiplyMatrixVector, transpose, type Matrix3, type Vec3 } from "./rotation";
 
 type Vec2 = [number, number];
@@ -21,7 +21,7 @@ export const EXPORT_SIZE = 1024;
 export function renderLogoToCanvas(
   canvas: HTMLCanvasElement,
   state: LogoState,
-  options: { transparent?: boolean; padding?: number; deviceScale?: number } = {},
+  options: { transparent?: boolean; omitBackground?: boolean; padding?: number; deviceScale?: number } = {},
 ): void {
   const context = canvas.getContext("2d");
 
@@ -39,7 +39,7 @@ export function renderLogo(
   state: LogoState,
   width: number,
   height: number,
-  options: { transparent?: boolean; padding?: number } = {},
+  options: { transparent?: boolean; omitBackground?: boolean; padding?: number } = {},
 ): void {
   const padding = options.padding ?? DEFAULT_EXPORT_PADDING;
   const centerX = width / 2;
@@ -48,43 +48,42 @@ export function renderLogo(
 
   context.clearRect(0, 0, width, height);
 
-  if (!options.transparent) {
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, width, height);
+  if (!options.omitBackground && !options.transparent) {
+    drawRectPaint(context, 0, 0, width, height, state.background);
   }
 
-  if (isLatticeEnabled(state.base.latticeResolution)) {
+  drawCirclePaint(context, centerX, centerY, radius, state.base);
+
+  if (state.base.lattice) {
     drawLatticeLayer(context, {
       maskPolygons: [circlePolygon()],
-      color: state.base.color,
-      alpha: state.base.alpha,
-      lineWidth: state.base.lineWidth,
-      resolution: state.base.latticeResolution,
-      rotation: state.base.latticeRotation,
+      lattice: state.base.lattice,
       centerX,
       centerY,
       radius,
     });
-  } else {
-    drawCircle(context, centerX, centerY, radius, state.base.color, state.base.alpha);
   }
 
-  for (const cover of state.covers) {
-    if (isLatticeEnabled(cover.latticeResolution)) {
+  for (const item of state.stack) {
+    const cover = findCover(state, item);
+
+    if (!cover) {
+      continue;
+    }
+
+    if (item.kind === "cover") {
+      drawCover(context, cover, centerX, centerY, radius);
+    }
+
+    if (item.kind === "coverLattice" && cover.lattice) {
       const polygons = visibleCoverPolygons(cover.rotation);
       drawLatticeLayer(context, {
         maskPolygons: polygons,
-        color: cover.color,
-        alpha: cover.alpha,
-        lineWidth: cover.lineWidth,
-        resolution: cover.latticeResolution,
-        rotation: cover.latticeRotation,
+        lattice: cover.lattice,
         centerX,
         centerY,
         radius,
       });
-    } else {
-      drawCover(context, cover, centerX, centerY, radius);
     }
   }
 }
@@ -93,7 +92,7 @@ export async function exportLogoPng(state: LogoState): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = EXPORT_SIZE;
   canvas.height = EXPORT_SIZE;
-  renderLogoToCanvas(canvas, state, { transparent: false });
+  renderLogoToCanvas(canvas, state);
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
 
@@ -129,7 +128,7 @@ function drawCover(
   centerY: number,
   radius: number,
 ): void {
-  if (cover.alpha <= 0) {
+  if (cover.colorMode === "normal" && cover.alpha <= 0) {
     return;
   }
 
@@ -137,7 +136,7 @@ function drawCover(
   const polygons = visibleCoverPolygons(rotation);
 
   context.save();
-  context.fillStyle = colorWithAlpha(cover.color, cover.alpha);
+  applyPaint(context, cover);
 
   for (const polygon of polygons) {
     if (polygon.length < 3) {
@@ -165,11 +164,7 @@ export function visibleCoverPolygons(rotation: Matrix3): Vec2[][] {
 
 type LatticeDrawOptions = {
   maskPolygons: Vec2[][];
-  color: string;
-  alpha: number;
-  lineWidth: number;
-  resolution: 20 | 80 | 320 | 1280 | 5120;
-  rotation: Matrix3;
+  lattice: LatticeLayer;
   centerX: number;
   centerY: number;
   radius: number;
@@ -177,27 +172,26 @@ type LatticeDrawOptions = {
 
 function drawLatticeLayer(
   context: CanvasRenderingContext2D,
-  { maskPolygons, color, alpha, lineWidth, resolution, rotation, centerX, centerY, radius }: LatticeDrawOptions,
+  { maskPolygons, lattice, centerX, centerY, radius }: LatticeDrawOptions,
 ): void {
-  if (alpha <= 0 || maskPolygons.length === 0) {
+  if ((lattice.colorMode === "normal" && lattice.alpha <= 0) || maskPolygons.length === 0) {
     return;
   }
 
-  const mesh = createIcosphere(resolution);
-  const strokeWidth = scaledLineWidth(lineWidth, radius);
-  const strokeStyle = colorWithAlpha(color, alpha);
+  const mesh = createIcosphere(lattice.resolution);
+  const strokeWidth = scaledLineWidth(lattice.lineWidth, radius);
 
   context.save();
   beginMaskPath(context, maskPolygons, centerX, centerY, radius);
   context.clip();
-  context.strokeStyle = strokeStyle;
+  applyPaint(context, lattice);
   context.lineWidth = strokeWidth;
   context.lineCap = "round";
   context.lineJoin = "round";
 
   for (const [startIndex, endIndex] of mesh.edges) {
     const points = sampleGreatCircleEdge(mesh.vertices[startIndex], mesh.vertices[endIndex]).map((point) =>
-      multiplyMatrixVector(rotation, point),
+      multiplyMatrixVector(lattice.rotation, point),
     );
     drawFrontPolyline(context, points, centerX, centerY, radius);
   }
@@ -205,13 +199,35 @@ function drawLatticeLayer(
   context.restore();
 
   context.save();
-  context.strokeStyle = strokeStyle;
+  applyPaint(context, lattice);
   context.lineWidth = strokeWidth;
   context.lineCap = "round";
   context.lineJoin = "round";
   beginMaskPath(context, maskPolygons, centerX, centerY, radius);
   context.stroke();
   context.restore();
+
+  if (lattice.showIntersections) {
+    const dotRadius = scaledLineWidth(lattice.dotSize, radius) / 2;
+
+    context.save();
+    applyPaint(context, lattice);
+
+    for (const vertex of mesh.vertices) {
+      const rotated = multiplyMatrixVector(lattice.rotation, vertex);
+
+      if (rotated[2] < 0 || !pointInAnyPolygon([rotated[0], rotated[1]], maskPolygons)) {
+        continue;
+      }
+
+      const [x, y] = toCanvas(rotated, centerX, centerY, radius);
+      context.beginPath();
+      context.arc(x, y, dotRadius, 0, Math.PI * 2);
+      context.fill();
+    }
+
+    context.restore();
+  }
 }
 
 function drawFrontPolyline(
@@ -467,6 +483,10 @@ function pointInPolygon(point: Vec2, polygon: Vec2[]): boolean {
   return inside;
 }
 
+function pointInAnyPolygon(point: Vec2, polygons: Vec2[][]): boolean {
+  return polygons.some((polygon) => pointInPolygon(point, polygon));
+}
+
 function circlePolygon(): Vec2[] {
   const points: Vec2[] = [];
 
@@ -478,18 +498,39 @@ function circlePolygon(): Vec2[] {
   return points;
 }
 
-function drawCircle(
+function drawRectPaint(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  paint: PaintStyle,
+): void {
+  if (paint.colorMode === "normal" && paint.alpha <= 0) {
+    return;
+  }
+
+  context.save();
+  applyPaint(context, paint);
+  context.fillRect(x, y, width, height);
+  context.restore();
+}
+
+function drawCirclePaint(
   context: CanvasRenderingContext2D,
   centerX: number,
   centerY: number,
   radius: number,
-  color: string,
-  alpha: number,
+  paint: PaintStyle,
 ): void {
+  if (paint.colorMode === "normal" && paint.alpha <= 0) {
+    return;
+  }
+
   context.save();
   context.beginPath();
   context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-  context.fillStyle = colorWithAlpha(color, alpha);
+  applyPaint(context, paint);
   context.fill();
   context.restore();
 }
@@ -522,6 +563,25 @@ function colorWithAlpha(hex: string, alpha: number): string {
   const blue = Number.parseInt(hex.slice(5, 7), 16);
 
   return `rgba(${red}, ${green}, ${blue}, ${Math.min(1, Math.max(0, alpha))})`;
+}
+
+function applyPaint(context: CanvasRenderingContext2D, paint: PaintStyle | { colorMode: ColorMode; color: string; alpha: number }): void {
+  if (paint.colorMode === "knockout") {
+    context.globalCompositeOperation = "destination-out";
+    context.globalAlpha = 1;
+    context.fillStyle = "#000000";
+    context.strokeStyle = "#000000";
+    return;
+  }
+
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = 1;
+  context.fillStyle = colorWithAlpha(paint.color, paint.alpha);
+  context.strokeStyle = colorWithAlpha(paint.color, paint.alpha);
+}
+
+function findCover(state: LogoState, item: StackItem): CoverLayer | undefined {
+  return state.covers.find((cover) => cover.id === item.id);
 }
 
 function positiveAngle(angle: number): number {

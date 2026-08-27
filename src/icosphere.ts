@@ -7,13 +7,9 @@ export type IcosphereMesh = {
   edges: [number, number][];
 };
 
-const meshCache = new Map<Exclude<LatticeResolution, "none">, IcosphereMesh>();
+const meshCache = new Map<LatticeResolution, IcosphereMesh>();
 
-export function isLatticeEnabled(resolution: LatticeResolution): resolution is Exclude<LatticeResolution, "none"> {
-  return resolution !== "none";
-}
-
-export function createIcosphere(faceCount: Exclude<LatticeResolution, "none">): IcosphereMesh {
+export function createIcosphere(faceCount: LatticeResolution): IcosphereMesh {
   const cached = meshCache.get(faceCount);
 
   if (cached) {
