@@ -1,4 +1,4 @@
-import { Check, ChevronLeft, ChevronRight, Plus, Save, Trash2, X } from "lucide-react";
+import { Check, Save, Trash2, X } from "lucide-react";
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -9,11 +9,21 @@ import {
   useRef,
   useState,
 } from "react";
-import { createCover, createLatticeFromSource, loadLogoState, saveLogoState } from "./storage";
+import {
+  BORDER_WIDTH_MAX,
+  DASH_LENGTH_MAX,
+  BORDER_WIDTH_MIN,
+  createBorder,
+  createLatticeFromSource,
+  loadLogoState,
+  saveLogoState,
+} from "./storage";
 import { exportLogoPng, renderLogoToCanvas } from "./logoRenderer";
+import { exportLogoSvg } from "./svgExport";
+import { MAX_FREQUENCY, MIN_FREQUENCY, clampFrequency } from "./icosphere";
 import {
   eulerToMatrix,
-  inverseRotation,
+  identityRotation,
   matrixToEuler,
   multiplyMatrices,
   normalizeRotation,
@@ -22,19 +32,15 @@ import {
   type Matrix3,
 } from "./rotation";
 import type {
+  BackEdgeMode,
+  BorderLayer,
   ColorMode,
-  CoverLayer,
   EditableLayer,
   LatticeLayer,
-  LatticeResolution,
   LogoState,
   PaintStyle,
-  StackItem,
 } from "./types";
 
-const LONG_PRESS_MS = 480;
-const DOUBLE_PRESS_MS = 300;
-const TAP_MOVE_LIMIT = 8;
 const DRAG_DEGREES_PER_PIXEL = 0.45;
 const EULER_FIELDS = [
   { key: "roll", label: "Roll" },
@@ -42,24 +48,32 @@ const EULER_FIELDS = [
   { key: "yaw", label: "Yaw" },
 ] as const;
 const BLANK_EULER_DRAFTS = { roll: "", pitch: "", yaw: "" };
-const LATTICE_OPTIONS = [20, 80, 320, 1280, 5120] as const;
+const EULER_MIN = 0;
+const EULER_MAX = 360;
+const EULER_STEP = 0.1;
+const BACK_EDGE_MODES: { value: BackEdgeMode; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "mask", label: "Lattice" },
+  { value: "both", label: "Both" },
+  { value: "through", label: "Through" },
+];
 const LINE_WIDTH_MIN = 1;
 const LINE_WIDTH_MAX = 12;
-const DOT_SIZE_MIN = 1;
-const DOT_SIZE_MAX = 12;
 const DEFAULT_PREVIEW_SIZE = 52;
+
+type ExportFormat = "png" | "svg";
+
+const EXPORT_FORMATS: ExportFormat[] = ["png", "svg"];
 
 type EulerField = (typeof EULER_FIELDS)[number]["key"];
 
 type LayerSwatchProps = {
-  kind: "background" | "base" | "cover" | "lattice";
+  kind: "background" | "base" | "cover" | "lattice" | "border";
   paint?: PaintStyle;
   previewState?: LogoState;
-  selected?: boolean;
-  onTap: () => void;
-  onLongPress: () => void;
+  onOpen: () => void;
   ariaLabel: string;
-  layerKey?: string;
+  layerKey: string;
 };
 
 type LatticePreviewCircleProps = {
@@ -74,23 +88,20 @@ type PointerPoint = {
   y: number;
 };
 
+// A rotation matrix has many valid Euler decompositions. While the user works a
+// slider we keep showing the triple they are actually driving, so the other two
+// readouts do not jump to an equivalent-but-different decomposition mid-drag.
 type EulerDisplayOverride = {
-  layerKey: string;
   rotation: Matrix3;
   values: EulerAngles;
 };
-
-type RotatableLayerRef =
-  | { kind: "base"; key: string; rotation: Matrix3 }
-  | { kind: "baseLattice"; key: string; rotation: Matrix3 }
-  | { kind: "cover"; key: string; id: string; rotation: Matrix3 }
-  | { kind: "coverLattice"; key: string; id: string; rotation: Matrix3 };
 
 export default function App() {
   const [logoState, setLogoState] = useState<LogoState>(() => loadLogoState());
   const [editingLayer, setEditingLayer] = useState<EditableLayer | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [filename, setFilename] = useState("logo.png");
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("png");
   const [canvasSize, setCanvasSize] = useState(0);
   const [activeEulerField, setActiveEulerField] = useState<EulerField | null>(null);
   const [eulerDrafts, setEulerDrafts] = useState<Record<EulerField, string>>(BLANK_EULER_DRAFTS);
@@ -100,34 +111,21 @@ export default function App() {
   const activePointersRef = useRef<Map<number, PointerPoint>>(new Map());
   const lastTwistAngleRef = useRef<number | null>(null);
   const saveInputRef = useRef<HTMLInputElement | null>(null);
-  const selectedRotatableLayers = useMemo(
-    () => rotatableLayers(logoState).filter((layer) => isLayerSelected(logoState, layer)),
-    [logoState],
-  );
-  const selectedReferenceLayer = selectedRotatableLayers[0] ?? null;
   const editingPaint = editingLayer ? editablePaint(logoState, editingLayer) : null;
   const editingLattice = editingLayer ? editableLattice(logoState, editingLayer) : null;
-  const canMoveLeft = editingLayer ? canMoveLayer(logoState, editingLayer, -1) : false;
-  const canMoveRight = editingLayer ? canMoveLayer(logoState, editingLayer, 1) : false;
+  const editingBorder = editingLayer?.kind === "border" ? logoState.border ?? null : null;
   const referenceEuler = useMemo(() => {
-    if (!selectedReferenceLayer) {
-      return null;
-    }
-
-    if (
-      eulerDisplayOverride?.layerKey === selectedReferenceLayer.key &&
-      matricesAreClose(eulerDisplayOverride.rotation, selectedReferenceLayer.rotation)
-    ) {
+    if (eulerDisplayOverride && matricesAreClose(eulerDisplayOverride.rotation, logoState.rotation)) {
       return eulerDisplayOverride.values;
     }
 
-    return matrixToEuler(selectedReferenceLayer.rotation);
-  }, [eulerDisplayOverride, selectedReferenceLayer]);
+    return matrixToEuler(logoState.rotation);
+  }, [eulerDisplayOverride, logoState.rotation]);
   const eulerDisplayValues = useMemo(
     () => ({
-      roll: referenceEuler ? formatEulerAngle(referenceEuler.roll) : "",
-      pitch: referenceEuler ? formatEulerAngle(referenceEuler.pitch) : "",
-      yaw: referenceEuler ? formatEulerAngle(referenceEuler.yaw) : "",
+      roll: formatEulerAngle(referenceEuler.roll),
+      pitch: formatEulerAngle(referenceEuler.pitch),
+      yaw: formatEulerAngle(referenceEuler.yaw),
     }),
     [referenceEuler],
   );
@@ -137,16 +135,10 @@ export default function App() {
   }, [logoState]);
 
   useEffect(() => {
-    if (!selectedReferenceLayer) {
-      setActiveEulerField(null);
-      setEulerDrafts(BLANK_EULER_DRAFTS);
-      return;
-    }
-
     if (!activeEulerField) {
       setEulerDrafts(eulerDisplayValues);
     }
-  }, [activeEulerField, eulerDisplayValues, selectedReferenceLayer]);
+  }, [activeEulerField, eulerDisplayValues]);
 
   useLayoutEffect(() => {
     const shell = logoShellRef.current;
@@ -191,76 +183,12 @@ export default function App() {
     }, 0);
   }, [filename, saveModalOpen]);
 
-  function toggleBaseSelection() {
-    setLogoState((current) => ({ ...current, base: { ...current.base, selected: !current.base.selected } }));
-  }
-
-  function toggleCoverSelection(id: string) {
-    setLogoState((current) => ({
-      ...current,
-      covers: current.covers.map((cover) => (cover.id === id ? { ...cover, selected: !cover.selected } : cover)),
-    }));
-  }
-
-  function toggleLatticeSelection(kind: "base" | "cover", id?: string) {
-    setLogoState((current) => {
-      if (kind === "base") {
-        return current.base.lattice
-          ? { ...current, base: { ...current.base, lattice: { ...current.base.lattice, selected: !current.base.lattice.selected } } }
-          : current;
-      }
-
-      return {
-        ...current,
-        covers: current.covers.map((cover) =>
-          cover.id === id && cover.lattice
-            ? { ...cover, lattice: { ...cover.lattice, selected: !cover.lattice.selected } }
-            : cover,
-        ),
-      };
-    });
-  }
-
-  function toggleAllRotatableLayers() {
-    setLogoState((current) => {
-      const layers = rotatableLayers(current);
-      const shouldSelectAll = layers.some((layer) => !isLayerSelected(current, layer));
-
-      return {
-        ...current,
-        base: {
-          ...current.base,
-          selected: shouldSelectAll,
-          lattice: current.base.lattice ? { ...current.base.lattice, selected: shouldSelectAll } : undefined,
-        },
-        covers: current.covers.map((cover) => ({
-          ...cover,
-          selected: shouldSelectAll,
-          lattice: cover.lattice ? { ...cover.lattice, selected: shouldSelectAll } : undefined,
-        })),
-      };
-    });
-  }
-
-  function addCover() {
-    setLogoState((current) => {
-      const cover = createCover({ selected: true });
-
-      return {
-        ...current,
-        covers: [...current.covers, cover],
-        stack: [...current.stack, { kind: "cover", id: cover.id }],
-      };
-    });
-  }
-
   function updateEditingColor(color: string) {
     updateEditablePaint({ color, colorMode: "normal" });
   }
 
   function updateEditingAlpha(alpha: number) {
-    const boundedAlpha = clamp(alpha, 0, 1);
-    updateEditablePaint({ alpha: boundedAlpha });
+    updateEditablePaint({ alpha: clamp(alpha, 0, 1) });
   }
 
   function updateEditingColorMode(colorMode: ColorMode) {
@@ -275,50 +203,52 @@ export default function App() {
     setLogoState((current) => updatePaintForLayer(current, editingLayer, patch));
   }
 
-  function updateEditingLatticeEnabled(enabled: boolean) {
-    if (!editingLayer || (editingLayer.kind !== "base" && editingLayer.kind !== "cover")) {
-      return;
-    }
-
+  function setLatticeEnabled(target: "base" | "cover", enabled: boolean) {
     setLogoState((current) => {
-      if (editingLayer.kind === "base") {
-        if (!enabled) {
-          return { ...current, base: { ...current.base, lattice: undefined } };
-        }
+      const source = target === "base" ? current.base : current.cover;
 
-        if (current.base.lattice) {
-          return current;
-        }
-
-        return {
-          ...current,
-          base: {
-            ...current.base,
-            selected: true,
-            lattice: createLatticeFromSource(current.base),
-          },
-        };
+      if (!enabled) {
+        return { ...current, [target]: { ...source, lattice: undefined } };
       }
 
-      return addOrRemoveCoverLattice(current, editingLayer.id, enabled);
+      if (source.lattice) {
+        return current;
+      }
+
+      return { ...current, [target]: { ...source, lattice: createLatticeFromSource(source) } };
     });
   }
 
-  function updateEditingLatticeResolution(value: string) {
-    const resolution = parseLatticeResolution(value);
-    updateEditableLattice({ resolution });
+  function updateEditingLatticeEnabled(enabled: boolean) {
+    if (editingLayer?.kind !== "base" && editingLayer?.kind !== "cover") {
+      return;
+    }
+
+    setLatticeEnabled(editingLayer.kind, enabled);
+  }
+
+  function setBorderEnabled(enabled: boolean) {
+    setLogoState((current) => ({
+      ...current,
+      border: enabled ? current.border ?? createBorder() : undefined,
+    }));
+  }
+
+  function updateEditingBorder(patch: Partial<BorderLayer>) {
+    setLogoState((current) => (current.border ? { ...current, border: { ...current.border, ...patch } } : current));
+  }
+
+  function deleteEditingBorder() {
+    setLogoState((current) => ({ ...current, border: undefined }));
+    setEditingLayer(null);
+  }
+
+  function updateEditingLatticeDensity(frequency: number) {
+    updateEditableLattice({ frequency: clampFrequency(frequency) });
   }
 
   function updateEditingLineWidth(lineWidth: number) {
     updateEditableLattice({ lineWidth: clamp(lineWidth, LINE_WIDTH_MIN, LINE_WIDTH_MAX) });
-  }
-
-  function updateEditingShowIntersections(showIntersections: boolean) {
-    updateEditableLattice({ showIntersections });
-  }
-
-  function updateEditingDotSize(dotSize: number) {
-    updateEditableLattice({ dotSize: clamp(dotSize, DOT_SIZE_MIN, DOT_SIZE_MAX) });
   }
 
   function updateEditableLattice(patch: Partial<LatticeLayer>) {
@@ -329,83 +259,56 @@ export default function App() {
     setLogoState((current) => updateLatticeForLayer(current, editingLayer, patch));
   }
 
-  function deleteEditingCover() {
-    if (editingLayer?.kind !== "cover") {
-      return;
-    }
-
-    setLogoState((current) => ({
-      ...current,
-      covers: current.covers.filter((cover) => cover.id !== editingLayer.id),
-      stack: current.stack.filter((item) => item.id !== editingLayer.id),
-    }));
-    setEditingLayer(null);
-  }
-
   function deleteEditingLattice() {
     if (!editingLayer || (editingLayer.kind !== "baseLattice" && editingLayer.kind !== "coverLattice")) {
       return;
     }
 
-    setLogoState((current) => {
-      if (editingLayer.kind === "baseLattice") {
-        return { ...current, base: { ...current.base, lattice: undefined } };
-      }
+    const target = editingLayer.kind === "baseLattice" ? "base" : "cover";
 
-      return addOrRemoveCoverLattice(current, editingLayer.id, false);
-    });
+    setLogoState((current) => ({ ...current, [target]: { ...current[target], lattice: undefined } }));
     setEditingLayer(null);
   }
 
-  function moveEditingLayer(direction: -1 | 1) {
-    if (!editingLayer) {
+  function rotateLogo(deltaRotation: Matrix3) {
+    setEulerDisplayOverride(null);
+    setLogoState((current) => ({
+      ...current,
+      rotation: normalizeRotation(multiplyMatrices(deltaRotation, current.rotation)),
+    }));
+  }
+
+  function setEulerValue(field: EulerField, value: number) {
+    const nextEuler = { ...referenceEuler, [field]: clamp(value, EULER_MIN, EULER_MAX) };
+    const rotation = normalizeRotation(eulerToMatrix(nextEuler.roll, nextEuler.pitch, nextEuler.yaw));
+
+    setLogoState((current) => ({ ...current, rotation }));
+    setEulerDisplayOverride({ rotation, values: nextEuler });
+  }
+
+  function handleEulerSlider(field: EulerField, value: number) {
+    if (!Number.isFinite(value)) {
       return;
     }
 
-    setLogoState((current) => moveLayerInStack(current, editingLayer, direction));
-  }
-
-  function rotateSelected(deltaRotation: Matrix3) {
-    setEulerDisplayOverride(null);
-    setLogoState((current) => {
-      if (rotatableLayers(current).every((layer) => !isLayerSelected(current, layer))) {
-        return current;
-      }
-
-      return mapSelectedRotations(current, deltaRotation);
-    });
+    setEulerValue(field, value);
   }
 
   function commitEulerField(field: EulerField, rawValue: string) {
     const trimmedValue = rawValue.trim();
     const parsed = Number(trimmedValue);
 
-    if (!selectedReferenceLayer || trimmedValue === "" || !Number.isFinite(parsed)) {
+    if (trimmedValue === "" || !Number.isFinite(parsed)) {
       setActiveEulerField(null);
       setEulerDrafts(eulerDisplayValues);
       return;
     }
 
-    const boundedValue = clamp(parsed, 0, 360);
-    const currentEuler = matrixToEuler(selectedReferenceLayer.rotation);
-    const nextEuler = { ...currentEuler, [field]: boundedValue };
-    const targetRotation = normalizeRotation(eulerToMatrix(nextEuler.roll, nextEuler.pitch, nextEuler.yaw));
-    const deltaRotation = multiplyMatrices(targetRotation, inverseRotation(selectedReferenceLayer.rotation));
-
-    setLogoState((current) => mapSelectedRotations(current, deltaRotation));
-    setEulerDisplayOverride({
-      layerKey: selectedReferenceLayer.key,
-      rotation: targetRotation,
-      values: nextEuler,
-    });
+    setEulerValue(field, parsed);
     setActiveEulerField(null);
   }
 
   function handleEulerFocus(field: EulerField) {
-    if (!selectedReferenceLayer) {
-      return;
-    }
-
     setActiveEulerField(field);
     setEulerDrafts((current) => ({ ...current, [field]: eulerDisplayValues[field] }));
   }
@@ -425,11 +328,12 @@ export default function App() {
     }
   }
 
-  function handleLogoPointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (selectedRotatableLayers.length === 0) {
-      return;
-    }
+  function resetRotation() {
+    setEulerDisplayOverride(null);
+    setLogoState((current) => ({ ...current, rotation: identityRotation() }));
+  }
 
+  function handleLogoPointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
     activePointersRef.current.set(event.pointerId, {
       id: event.pointerId,
@@ -445,7 +349,7 @@ export default function App() {
   function handleLogoPointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
     const pointer = activePointersRef.current.get(event.pointerId);
 
-    if (!pointer || selectedRotatableLayers.length === 0) {
+    if (!pointer) {
       return;
     }
 
@@ -461,7 +365,7 @@ export default function App() {
       const nextAngle = twistAngle(activePointers);
       const previousAngle = lastTwistAngleRef.current ?? nextAngle;
       lastTwistAngleRef.current = nextAngle;
-      rotateSelected(twistToScreenRotation(previousAngle, nextAngle));
+      rotateLogo(twistToScreenRotation(previousAngle, nextAngle));
       return;
     }
 
@@ -469,9 +373,9 @@ export default function App() {
     const deltaY = event.clientY - pointer.y;
 
     if (event.shiftKey) {
-      rotateSelected(shiftDragToScreenRotation(event.currentTarget, pointer, { x: event.clientX, y: event.clientY }));
+      rotateLogo(shiftDragToScreenRotation(event.currentTarget, pointer, { x: event.clientX, y: event.clientY }));
     } else {
-      rotateSelected(dragToScreenRotation(deltaX, deltaY));
+      rotateLogo(dragToScreenRotation(deltaX, deltaY));
     }
   }
 
@@ -485,39 +389,44 @@ export default function App() {
   }
 
   function openSaveModal() {
-    setFilename("logo.png");
+    setFilename(`logo.${exportFormat}`);
     setSaveModalOpen(true);
   }
 
+  function changeExportFormat(format: ExportFormat) {
+    setExportFormat(format);
+    setFilename((current) => withExtension(current, format));
+  }
+
   async function saveLogo() {
-    const blob = await exportLogoPng(logoState);
+    const blob =
+      exportFormat === "svg"
+        ? new Blob([exportLogoSvg(logoState)], { type: "image/svg+xml" })
+        : await exportLogoPng(logoState);
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = filenameWithPng(filename);
+    link.download = withExtension(filename, exportFormat);
     link.click();
     URL.revokeObjectURL(url);
     setSaveModalOpen(false);
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${editingLayer || saveModalOpen ? " editing" : ""}`}>
       <header className="top-panel">
         <div className="layer-row" aria-label="Layers">
           <LayerSwatch
             kind="background"
             paint={logoState.background}
-            onTap={toggleAllRotatableLayers}
-            onLongPress={() => setEditingLayer({ kind: "background" })}
+            onOpen={() => setEditingLayer({ kind: "background" })}
             ariaLabel="Background"
             layerKey="background"
           />
           <LayerSwatch
             kind="base"
             paint={logoState.base}
-            selected={logoState.base.selected}
-            onTap={toggleBaseSelection}
-            onLongPress={() => setEditingLayer({ kind: "base" })}
+            onOpen={() => setEditingLayer({ kind: "base" })}
             ariaLabel="Base sphere"
             layerKey="base"
           />
@@ -526,59 +435,39 @@ export default function App() {
               kind="lattice"
               paint={logoState.base.lattice}
               previewState={previewStateForBaseLattice(logoState)}
-              selected={logoState.base.lattice.selected}
-              onTap={() => toggleLatticeSelection("base")}
-              onLongPress={() => setEditingLayer({ kind: "baseLattice" })}
+              onOpen={() => setEditingLayer({ kind: "baseLattice" })}
               ariaLabel="Base lattice"
               layerKey="base-lattice"
             />
           )}
-          {logoState.stack.map((item) => {
-            const cover = findCover(logoState, item);
-
-            if (!cover) {
-              return null;
-            }
-
-            const coverIndex = logoState.covers.findIndex((candidate) => candidate.id === cover.id) + 1;
-
-            if (item.kind === "cover") {
-              return (
-                <LayerSwatch
-                  key={`cover-${cover.id}`}
-                  kind="cover"
-                  paint={cover}
-                  previewState={previewStateForCover(logoState, cover)}
-                  selected={cover.selected}
-                  onTap={() => toggleCoverSelection(cover.id)}
-                  onLongPress={() => setEditingLayer({ kind: "cover", id: cover.id })}
-                  ariaLabel={`Cover ${coverIndex}`}
-                  layerKey={`cover-${cover.id}`}
-                />
-              );
-            }
-
-            if (!cover.lattice) {
-              return null;
-            }
-
-            return (
-              <LayerSwatch
-                key={`cover-lattice-${cover.id}`}
-                kind="lattice"
-                paint={cover.lattice}
-                previewState={previewStateForCoverLattice(logoState, cover)}
-                selected={cover.lattice.selected}
-                onTap={() => toggleLatticeSelection("cover", cover.id)}
-                onLongPress={() => setEditingLayer({ kind: "coverLattice", id: cover.id })}
-                ariaLabel={`Cover ${coverIndex} lattice`}
-                layerKey={`cover-lattice-${cover.id}`}
-              />
-            );
-          })}
-          <button className="icon-button layer-add" type="button" onClick={addCover} aria-label="Add cover">
-            <Plus aria-hidden="true" size={24} strokeWidth={2.5} />
-          </button>
+          <LayerSwatch
+            kind="cover"
+            paint={logoState.cover}
+            previewState={previewStateForCover(logoState)}
+            onOpen={() => setEditingLayer({ kind: "cover" })}
+            ariaLabel="Cover"
+            layerKey="cover"
+          />
+          {logoState.cover.lattice && (
+            <LayerSwatch
+              kind="lattice"
+              paint={logoState.cover.lattice}
+              previewState={previewStateForCoverLattice(logoState)}
+              onOpen={() => setEditingLayer({ kind: "coverLattice" })}
+              ariaLabel="Cover lattice"
+              layerKey="cover-lattice"
+            />
+          )}
+          {logoState.border && (
+            <LayerSwatch
+              kind="border"
+              paint={logoState.border}
+              previewState={previewStateForBorder(logoState)}
+              onOpen={() => setEditingLayer({ kind: "border" })}
+              ariaLabel="Border"
+              layerKey="border"
+            />
+          )}
         </div>
       </header>
 
@@ -601,27 +490,45 @@ export default function App() {
         {!editingLayer && !saveModalOpen && (
           <div className="euler-controls" aria-label="Euler rotation">
             {EULER_FIELDS.map(({ key, label }) => (
-              <label key={key} className="euler-field">
-                <span>{label}</span>
+              <div key={key} className="euler-field">
+                <span className="euler-label">{label}</span>
                 <input
+                  className="euler-slider"
+                  type="range"
+                  min={EULER_MIN}
+                  max={EULER_MAX}
+                  step={EULER_STEP}
+                  value={referenceEuler[key]}
+                  onChange={(event) => handleEulerSlider(key, Number(event.target.value))}
+                  onDoubleClick={() => setEulerValue(key, 0)}
+                  aria-label={`${label} slider`}
+                />
+                <input
+                  className="euler-value"
                   type="text"
                   inputMode="decimal"
-                  value={selectedReferenceLayer ? (activeEulerField === key ? eulerDrafts[key] : eulerDisplayValues[key]) : ""}
-                  disabled={!selectedReferenceLayer}
+                  value={activeEulerField === key ? eulerDrafts[key] : eulerDisplayValues[key]}
                   onFocus={() => handleEulerFocus(key)}
                   onChange={(event) => handleEulerChange(key, event.target.value)}
                   onBlur={() => handleEulerBlur(key)}
                   onKeyDown={handleEulerKeyDown}
                   aria-label={label}
                 />
-              </label>
+              </div>
             ))}
           </div>
         )}
 
-        <button className="icon-button save-button" type="button" onClick={openSaveModal} aria-label="Save logo">
-          <Save aria-hidden="true" size={24} strokeWidth={2.35} />
-        </button>
+        <div className="bottom-actions">
+          {!editingLayer && !saveModalOpen && (
+            <button className="reset-button" type="button" onClick={resetRotation} aria-label="Reset rotation">
+              Reset
+            </button>
+          )}
+          <button className="icon-button save-button" type="button" onClick={openSaveModal} aria-label="Save logo">
+            <Save aria-hidden="true" size={24} strokeWidth={2.35} />
+          </button>
+        </div>
       </footer>
 
       {editingLayer && editingPaint && (
@@ -631,12 +538,6 @@ export default function App() {
             role="dialog"
             aria-label={editingLattice ? "Lattice color" : "Layer color"}
           >
-            <button className="move-button move-left icon-button" type="button" onClick={() => moveEditingLayer(-1)} disabled={!canMoveLeft} aria-label="Move left">
-              <ChevronLeft aria-hidden="true" size={21} strokeWidth={2.6} />
-            </button>
-            <button className="move-button move-right icon-button" type="button" onClick={() => moveEditingLayer(1)} disabled={!canMoveRight} aria-label="Move right">
-              <ChevronRight aria-hidden="true" size={21} strokeWidth={2.6} />
-            </button>
             <button className="modal-close icon-button" type="button" onClick={() => setEditingLayer(null)} aria-label="Close">
               <X aria-hidden="true" size={19} strokeWidth={2.5} />
             </button>
@@ -688,6 +589,21 @@ export default function App() {
               />
             </div>
 
+            {editingLayer.kind === "base" && (
+              <div className="inline-control-group">
+                <span className="modal-label">Border</span>
+                <label className="switch-control">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(logoState.border)}
+                    onChange={(event) => setBorderEnabled(event.target.checked)}
+                    aria-label="Border"
+                  />
+                  <span aria-hidden="true" />
+                </label>
+              </div>
+            )}
+
             {(editingLayer.kind === "base" || editingLayer.kind === "cover") && (
               <div className="inline-control-group">
                 <span className="modal-label">Lattice</span>
@@ -703,22 +619,44 @@ export default function App() {
               </div>
             )}
 
+            {editingBorder && (
+              <>
+                <div className="control-group">
+                  <span className="modal-label">Width</span>
+                  <input
+                    className="line-width-input"
+                    type="range"
+                    min={BORDER_WIDTH_MIN}
+                    max={BORDER_WIDTH_MAX}
+                    step="0.1"
+                    value={editingBorder.width}
+                    onChange={(event) =>
+                      updateEditingBorder({ width: clamp(Number(event.target.value), BORDER_WIDTH_MIN, BORDER_WIDTH_MAX) })
+                    }
+                    aria-label="Border width"
+                  />
+                </div>
+
+                <button className="trash-button icon-button" type="button" onClick={deleteEditingBorder} aria-label="Delete border">
+                  <Trash2 aria-hidden="true" size={23} strokeWidth={2.4} />
+                </button>
+              </>
+            )}
+
             {editingLattice && (
               <>
                 <div className="control-group">
-                  <span className="modal-label">Resolution</span>
-                  <select
-                    className="lattice-select"
-                    value={String(editingLattice.resolution)}
-                    onChange={(event) => updateEditingLatticeResolution(event.target.value)}
-                    aria-label="Lattice resolution"
-                  >
-                    {LATTICE_OPTIONS.map((option) => (
-                      <option key={option} value={String(option)}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="modal-label">Density</span>
+                  <input
+                    className="line-width-input"
+                    type="range"
+                    min={MIN_FREQUENCY}
+                    max={MAX_FREQUENCY}
+                    step={1}
+                    value={editingLattice.frequency}
+                    onChange={(event) => updateEditingLatticeDensity(Number(event.target.value))}
+                    aria-label="Density"
+                  />
                 </div>
                 <div className="control-group">
                   <span className="modal-label">Line width</span>
@@ -734,41 +672,104 @@ export default function App() {
                   />
                 </div>
                 <div className="inline-control-group">
-                  <span className="modal-label">Dots</span>
+                  <span className="modal-label">Outline</span>
                   <label className="switch-control">
                     <input
                       type="checkbox"
-                      checked={editingLattice.showIntersections}
-                      onChange={(event) => updateEditingShowIntersections(event.target.checked)}
-                      aria-label="Intersection points"
+                      checked={editingLattice.outline}
+                      onChange={(event) => updateEditableLattice({ outline: event.target.checked })}
+                      aria-label="Outline"
                     />
                     <span aria-hidden="true" />
                   </label>
                 </div>
                 <div className="control-group">
-                  <span className="modal-label">Dot size</span>
+                  <span className="modal-label">Outline width</span>
                   <input
-                    className="dot-size-input"
+                    className="line-width-input"
                     type="range"
-                    min={DOT_SIZE_MIN}
-                    max={DOT_SIZE_MAX}
+                    min={BORDER_WIDTH_MIN}
+                    max={BORDER_WIDTH_MAX}
                     step="0.1"
-                    value={editingLattice.dotSize}
-                    disabled={!editingLattice.showIntersections}
-                    onChange={(event) => updateEditingDotSize(Number(event.target.value))}
-                    aria-label="Dot size"
+                    value={editingLattice.outlineWidth}
+                    disabled={!editingLattice.outline}
+                    onChange={(event) =>
+                      updateEditableLattice({
+                        outlineWidth: clamp(Number(event.target.value), BORDER_WIDTH_MIN, BORDER_WIDTH_MAX),
+                      })
+                    }
+                    aria-label="Outline width"
                   />
+                </div>
+                <div className="control-group">
+                  <span className="modal-label">Spin</span>
+                  <div className="offset-grid">
+                    {EULER_FIELDS.map(({ key, label }) => (
+                      <label key={key} className="offset-field">
+                        <span>{label}</span>
+                        <input
+                          type="range"
+                          min={EULER_MIN}
+                          max={EULER_MAX}
+                          step={1}
+                          value={editingLattice.offset[key]}
+                          onChange={(event) =>
+                            updateEditableLattice({
+                              offset: { ...editingLattice.offset, [key]: clamp(Number(event.target.value), EULER_MIN, EULER_MAX) },
+                            })
+                          }
+                          aria-label={`Spin ${label.toLowerCase()}`}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="control-group">
+                  <span className="modal-label">Dashes</span>
+                  <input
+                    className="line-width-input"
+                    type="range"
+                    min={0}
+                    max={DASH_LENGTH_MAX}
+                    step="0.5"
+                    value={editingLattice.dashLength}
+                    onChange={(event) =>
+                      updateEditableLattice({ dashLength: clamp(Number(event.target.value), 0, DASH_LENGTH_MAX) })
+                    }
+                    aria-label="Dashes"
+                  />
+                </div>
+                <div className="control-group">
+                  <span className="modal-label">Back edges</span>
+                  <select
+                    className="lattice-select"
+                    value={editingLattice.backEdges}
+                    onChange={(event) => updateEditableLattice({ backEdges: event.target.value as BackEdgeMode })}
+                    aria-label="Back edges"
+                  >
+                    {BACK_EDGE_MODES.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="inline-control-group">
+                  <span className="modal-label">Cut fill</span>
+                  <label className="switch-control">
+                    <input
+                      type="checkbox"
+                      checked={editingLattice.cutFill}
+                      onChange={(event) => updateEditableLattice({ cutFill: event.target.checked })}
+                      aria-label="Cut fill"
+                    />
+                    <span aria-hidden="true" />
+                  </label>
                 </div>
                 <button className="trash-button icon-button" type="button" onClick={deleteEditingLattice} aria-label="Delete lattice">
                   <Trash2 aria-hidden="true" size={23} strokeWidth={2.4} />
                 </button>
               </>
-            )}
-
-            {editingLayer.kind === "cover" && (
-              <button className="trash-button icon-button" type="button" onClick={deleteEditingCover} aria-label="Delete cover">
-                <Trash2 aria-hidden="true" size={23} strokeWidth={2.4} />
-              </button>
             )}
           </div>
         </div>
@@ -787,6 +788,18 @@ export default function App() {
               onChange={(event) => setFilename(event.target.value)}
               aria-label="Filename"
             />
+            <select
+              className="lattice-select format-select"
+              value={exportFormat}
+              onChange={(event) => changeExportFormat(event.target.value as ExportFormat)}
+              aria-label="Format"
+            >
+              {EXPORT_FORMATS.map((format) => (
+                <option key={format} value={format}>
+                  {format.toUpperCase()}
+                </option>
+              ))}
+            </select>
             <button className="confirm-button icon-button" type="button" onClick={saveLogo} aria-label="Confirm">
               <Check aria-hidden="true" size={25} strokeWidth={2.7} />
             </button>
@@ -810,23 +823,16 @@ function LatticePreviewCircle({ lattice, onColorChange, onSelectNormal }: Lattic
     const size = 512;
     canvas.width = size;
     canvas.height = size;
-    renderLogoToCanvas(canvas, {
-      background: { colorMode: "normal", color: "#ffffff", alpha: 0 },
-      base: {
-        colorMode: "normal",
-        color: "#ffffff",
-        alpha: 0,
-        rotation: [
-          [1, 0, 0],
-          [0, 1, 0],
-          [0, 0, 1],
-        ],
-        selected: false,
-        lattice: { ...lattice, selected: false },
+    renderLogoToCanvas(
+      canvas,
+      {
+        background: { colorMode: "normal", color: "#ffffff", alpha: 0 },
+        base: { colorMode: "normal", color: "#ffffff", alpha: 0, lattice },
+        cover: { colorMode: "normal", color: "#000000", alpha: 0 },
+        rotation: identityRotation(),
       },
-      covers: [],
-      stack: [],
-    }, { transparent: true, padding: 0.08 });
+      { transparent: true, padding: 0.08 },
+    );
   }, [lattice]);
 
   return (
@@ -855,20 +861,7 @@ function previewBackgroundStyle(background: LogoState["background"]): CSSPropert
   } as CSSProperties;
 }
 
-function LayerSwatch({
-  kind,
-  paint,
-  previewState,
-  selected = false,
-  onTap,
-  onLongPress,
-  ariaLabel,
-  layerKey,
-}: LayerSwatchProps) {
-  const timerRef = useRef<number | null>(null);
-  const lastTapTimeRef = useRef(0);
-  const startRef = useRef<{ x: number; y: number } | null>(null);
-  const longPressedRef = useRef(false);
+function LayerSwatch({ kind, paint, previewState, onOpen, ariaLabel, layerKey }: LayerSwatchProps) {
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useLayoutEffect(() => {
@@ -884,71 +877,15 @@ function LayerSwatch({
     renderLogoToCanvas(canvas, previewState, { transparent: true, padding: 0.1 });
   }, [previewState]);
 
-  function clearTimer() {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }
-
-  function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    startRef.current = { x: event.clientX, y: event.clientY };
-    longPressedRef.current = false;
-    clearTimer();
-    timerRef.current = window.setTimeout(() => {
-      longPressedRef.current = true;
-      lastTapTimeRef.current = 0;
-      onLongPress();
-    }, LONG_PRESS_MS);
-  }
-
-  function handlePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
-    const start = startRef.current;
-
-    if (!start) {
-      return;
-    }
-
-    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > TAP_MOVE_LIMIT) {
-      clearTimer();
-    }
-  }
-
-  function handlePointerEnd(event: ReactPointerEvent<HTMLButtonElement>) {
-    const start = startRef.current;
-    const wasLongPress = longPressedRef.current;
-    clearTimer();
-    startRef.current = null;
-    longPressedRef.current = false;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-
-    if (!wasLongPress && start && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= TAP_MOVE_LIMIT) {
-      const now = window.performance.now();
-
-      if (lastTapTimeRef.current > 0 && now - lastTapTimeRef.current <= DOUBLE_PRESS_MS) {
-        lastTapTimeRef.current = 0;
-        onTap();
-        onLongPress();
-      } else {
-        lastTapTimeRef.current = now;
-        onTap();
-      }
-    }
-  }
-
   return (
     <button
-      className={`layer-swatch ${kind}-swatch${selected ? " selected" : ""}${paint?.colorMode === "knockout" ? " knockout" : ""}`}
+      className={`layer-swatch ${kind}-swatch${paint?.colorMode === "knockout" ? " knockout" : ""}`}
       type="button"
       aria-label={ariaLabel}
       data-layer-key={layerKey}
       data-layer-kind={kind}
       style={{ "--swatch-color": paint?.color ?? "#ffffff", "--swatch-alpha": paint?.alpha ?? 1 } as CSSProperties}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerEnd}
-      onPointerCancel={handlePointerEnd}
+      onClick={onOpen}
     >
       {kind === "background" || kind === "base" ? <span aria-hidden="true" /> : <canvas ref={previewCanvasRef} aria-hidden="true" />}
     </button>
@@ -956,42 +893,23 @@ function LayerSwatch({
 }
 
 function updatePaintForLayer(state: LogoState, layer: EditableLayer, patch: Partial<PaintStyle>): LogoState {
-  const normalizePatch = patch.colorMode === "knockout" ? { ...patch, alpha: 1 } : patch;
+  const normalizedPatch = patch.colorMode === "knockout" ? { ...patch, alpha: 1 } : patch;
 
-  if (layer.kind === "background") {
-    return { ...state, background: { ...state.background, ...normalizePatch } };
+  switch (layer.kind) {
+    case "background":
+      // The background is the ground everything sits on, so it never knocks out.
+      return { ...state, background: { ...state.background, ...normalizedPatch, colorMode: "normal" } };
+    case "base":
+      return { ...state, base: { ...state.base, ...normalizedPatch } };
+    case "cover":
+      return { ...state, cover: { ...state.cover, ...normalizedPatch } };
+    case "baseLattice":
+      return updateLatticeForLayer(state, layer, normalizedPatch);
+    case "coverLattice":
+      return updateLatticeForLayer(state, layer, normalizedPatch);
+    case "border":
+      return state.border ? { ...state, border: { ...state.border, ...normalizedPatch } } : state;
   }
-
-  if (layer.kind === "base") {
-    return { ...state, base: { ...state.base, ...normalizePatch } };
-  }
-
-  if (layer.kind === "baseLattice" && state.base.lattice) {
-    return { ...state, base: { ...state.base, lattice: { ...state.base.lattice, ...normalizePatch } } };
-  }
-
-  if (layer.kind !== "cover" && layer.kind !== "coverLattice") {
-    return state;
-  }
-
-  return {
-    ...state,
-    covers: state.covers.map((cover) => {
-      if (cover.id !== layer.id) {
-        return cover;
-      }
-
-      if (layer.kind === "cover") {
-        return { ...cover, ...normalizePatch };
-      }
-
-      if (layer.kind === "coverLattice" && cover.lattice) {
-        return { ...cover, lattice: { ...cover.lattice, ...normalizePatch } };
-      }
-
-      return cover;
-    }),
-  };
 }
 
 function updateLatticeForLayer(state: LogoState, layer: EditableLayer, patch: Partial<LatticeLayer>): LogoState {
@@ -999,184 +917,28 @@ function updateLatticeForLayer(state: LogoState, layer: EditableLayer, patch: Pa
     return { ...state, base: { ...state.base, lattice: { ...state.base.lattice, ...patch } } };
   }
 
-  if (layer.kind !== "coverLattice") {
-    return state;
+  if (layer.kind === "coverLattice" && state.cover.lattice) {
+    return { ...state, cover: { ...state.cover, lattice: { ...state.cover.lattice, ...patch } } };
   }
 
-  return {
-    ...state,
-    covers: state.covers.map((cover) =>
-      cover.id === layer.id && cover.lattice ? { ...cover, lattice: { ...cover.lattice, ...patch } } : cover,
-    ),
-  };
-}
-
-function addOrRemoveCoverLattice(state: LogoState, id: string, enabled: boolean): LogoState {
-  if (!enabled) {
-    return {
-      ...state,
-      covers: state.covers.map((cover) => (cover.id === id ? { ...cover, lattice: undefined } : cover)),
-      stack: state.stack.filter((item) => !(item.kind === "coverLattice" && item.id === id)),
-    };
-  }
-
-  const cover = findCover(state, { kind: "cover", id });
-
-  if (!cover || cover.lattice) {
-    return state;
-  }
-
-  const insertIndex = Math.max(0, state.stack.findIndex((item) => item.kind === "cover" && item.id === id) + 1);
-  const nextStack = [...state.stack];
-  nextStack.splice(insertIndex, 0, { kind: "coverLattice", id });
-
-  return {
-    ...state,
-    covers: state.covers.map((candidate) =>
-      candidate.id === id
-        ? {
-            ...candidate,
-            selected: true,
-            lattice: createLatticeFromSource(candidate),
-          }
-        : candidate,
-    ),
-    stack: nextStack,
-  };
-}
-
-function moveLayerInStack(state: LogoState, layer: EditableLayer, direction: -1 | 1): LogoState {
-  const stackItem = editableToStackItem(layer);
-
-  if (!stackItem) {
-    return state;
-  }
-
-  const index = state.stack.findIndex((item) => item.kind === stackItem.kind && item.id === stackItem.id);
-  const nextIndex = index + direction;
-
-  if (index < 0 || nextIndex < 0 || nextIndex >= state.stack.length) {
-    return state;
-  }
-
-  const stack = [...state.stack];
-  [stack[index], stack[nextIndex]] = [stack[nextIndex], stack[index]];
-  return { ...state, stack };
-}
-
-function canMoveLayer(state: LogoState, layer: EditableLayer, direction: -1 | 1): boolean {
-  const stackItem = editableToStackItem(layer);
-
-  if (!stackItem) {
-    return false;
-  }
-
-  const index = state.stack.findIndex((item) => item.kind === stackItem.kind && item.id === stackItem.id);
-  const nextIndex = index + direction;
-  return index >= 0 && nextIndex >= 0 && nextIndex < state.stack.length;
-}
-
-function editableToStackItem(layer: EditableLayer): StackItem | null {
-  if (layer.kind === "cover") {
-    return { kind: "cover", id: layer.id };
-  }
-
-  if (layer.kind === "coverLattice") {
-    return { kind: "coverLattice", id: layer.id };
-  }
-
-  return null;
-}
-
-function mapSelectedRotations(state: LogoState, deltaRotation: Matrix3): LogoState {
-  return {
-    ...state,
-    base: {
-      ...state.base,
-      rotation: state.base.selected
-        ? normalizeRotation(multiplyMatrices(deltaRotation, state.base.rotation))
-        : state.base.rotation,
-      lattice:
-        state.base.lattice && state.base.lattice.selected
-          ? {
-              ...state.base.lattice,
-              rotation: normalizeRotation(multiplyMatrices(deltaRotation, state.base.lattice.rotation)),
-            }
-          : state.base.lattice,
-    },
-    covers: state.covers.map((cover) => ({
-      ...cover,
-      rotation: cover.selected ? normalizeRotation(multiplyMatrices(deltaRotation, cover.rotation)) : cover.rotation,
-      lattice:
-        cover.lattice && cover.lattice.selected
-          ? { ...cover.lattice, rotation: normalizeRotation(multiplyMatrices(deltaRotation, cover.lattice.rotation)) }
-          : cover.lattice,
-    })),
-  };
-}
-
-function rotatableLayers(state: LogoState): RotatableLayerRef[] {
-  const layers: RotatableLayerRef[] = [{ kind: "base", key: "base", rotation: state.base.rotation }];
-
-  if (state.base.lattice) {
-    layers.push({ kind: "baseLattice", key: "base-lattice", rotation: state.base.lattice.rotation });
-  }
-
-  for (const item of state.stack) {
-    const cover = findCover(state, item);
-
-    if (!cover) {
-      continue;
-    }
-
-    if (item.kind === "cover") {
-      layers.push({ kind: "cover", key: `cover-${cover.id}`, id: cover.id, rotation: cover.rotation });
-    } else if (cover.lattice) {
-      layers.push({ kind: "coverLattice", key: `cover-lattice-${cover.id}`, id: cover.id, rotation: cover.lattice.rotation });
-    }
-  }
-
-  return layers;
-}
-
-function isLayerSelected(state: LogoState, layer: RotatableLayerRef): boolean {
-  if (layer.kind === "base") {
-    return state.base.selected;
-  }
-
-  if (layer.kind === "baseLattice") {
-    return state.base.lattice?.selected === true;
-  }
-
-  const cover = state.covers.find((candidate) => candidate.id === layer.id);
-
-  if (!cover) {
-    return false;
-  }
-
-  return layer.kind === "cover" ? cover.selected : cover.lattice?.selected === true;
+  return state;
 }
 
 function editablePaint(state: LogoState, layer: EditableLayer): PaintStyle | null {
-  if (layer.kind === "background") {
-    return state.background;
+  switch (layer.kind) {
+    case "background":
+      return state.background;
+    case "base":
+      return state.base;
+    case "cover":
+      return state.cover;
+    case "baseLattice":
+      return state.base.lattice ?? null;
+    case "coverLattice":
+      return state.cover.lattice ?? null;
+    case "border":
+      return state.border ?? null;
   }
-
-  if (layer.kind === "base") {
-    return state.base;
-  }
-
-  if (layer.kind === "baseLattice") {
-    return state.base.lattice ?? null;
-  }
-
-  const cover = state.covers.find((candidate) => candidate.id === layer.id);
-
-  if (!cover) {
-    return null;
-  }
-
-  return layer.kind === "cover" ? cover : cover.lattice ?? null;
 }
 
 function editableLattice(state: LogoState, layer: EditableLayer): LatticeLayer | null {
@@ -1185,7 +947,7 @@ function editableLattice(state: LogoState, layer: EditableLayer): LatticeLayer |
   }
 
   if (layer.kind === "coverLattice") {
-    return state.covers.find((cover) => cover.id === layer.id)?.lattice ?? null;
+    return state.cover.lattice ?? null;
   }
 
   return null;
@@ -1197,71 +959,54 @@ function sourceHasLattice(state: LogoState, layer: EditableLayer): boolean {
   }
 
   if (layer.kind === "cover") {
-    return Boolean(state.covers.find((cover) => cover.id === layer.id)?.lattice);
+    return Boolean(state.cover.lattice);
   }
 
   return false;
 }
 
-function findCover(state: LogoState, item: StackItem): CoverLayer | undefined {
-  return state.covers.find((cover) => cover.id === item.id);
-}
 
-function parseLatticeResolution(value: string): LatticeResolution {
-  const parsed = Number(value);
-  return LATTICE_OPTIONS.includes(parsed as (typeof LATTICE_OPTIONS)[number])
-    ? (parsed as LatticeResolution)
-    : 320;
-}
+const INVISIBLE_PAINT: PaintStyle = { colorMode: "normal", color: "#ffffff", alpha: 0 };
 
-function previewStateForCover(state: LogoState, cover: CoverLayer): LogoState {
+function previewStateForCover(state: LogoState): LogoState {
   return {
-    background: { colorMode: "normal", color: "#ffffff", alpha: 0 },
-    base: invisibleBase(),
-    covers: [{ ...cover, selected: false, lattice: undefined }],
-    stack: [{ kind: "cover", id: cover.id }],
+    background: INVISIBLE_PAINT,
+    base: INVISIBLE_PAINT,
+    cover: { ...state.cover, lattice: undefined },
+    rotation: state.rotation,
   };
 }
 
 function previewStateForBaseLattice(state: LogoState): LogoState {
   return {
-    ...state,
-    background: { colorMode: "normal", color: "#ffffff", alpha: 0 },
-    base: {
-      ...invisibleBase(),
-      lattice: state.base.lattice ? { ...state.base.lattice, selected: false } : undefined,
-    },
-    covers: [],
-    stack: [],
+    background: INVISIBLE_PAINT,
+    base: { ...INVISIBLE_PAINT, lattice: state.base.lattice },
+    cover: INVISIBLE_PAINT,
+    rotation: state.rotation,
   };
 }
 
-function previewStateForCoverLattice(state: LogoState, cover: CoverLayer): LogoState {
+function previewStateForBorder(state: LogoState): LogoState {
   return {
-    background: { colorMode: "normal", color: "#ffffff", alpha: 0 },
-    base: invisibleBase(),
-    covers: [{ ...cover, selected: false }],
-    stack: cover.lattice ? [{ kind: "coverLattice", id: cover.id }] : [],
+    background: INVISIBLE_PAINT,
+    base: INVISIBLE_PAINT,
+    cover: INVISIBLE_PAINT,
+    border: state.border,
+    rotation: state.rotation,
   };
 }
 
-function invisibleBase(): LogoState["base"] {
+function previewStateForCoverLattice(state: LogoState): LogoState {
   return {
-    colorMode: "normal",
-    color: "#ffffff",
-    alpha: 0,
-    rotation: [
-      [1, 0, 0],
-      [0, 1, 0],
-      [0, 0, 1],
-    ],
-    selected: false,
+    background: INVISIBLE_PAINT,
+    base: INVISIBLE_PAINT,
+    cover: { ...INVISIBLE_PAINT, lattice: state.cover.lattice },
+    rotation: state.rotation,
   };
 }
 
 function twistAngle(points: PointerPoint[]): number {
-  const [first, second] = points;
-  return Math.atan2(second.y - first.y, second.x - first.x);
+  return Math.atan2(points[1].y - points[0].y, points[1].x - points[0].x);
 }
 
 function dragToScreenRotation(deltaX: number, deltaY: number): Matrix3 {
@@ -1277,13 +1022,12 @@ function twistToScreenRotation(previousAngle: number, nextAngle: number): Matrix
 
 function shiftDragToScreenRotation(
   element: HTMLElement,
-  previousPoint: Pick<PointerPoint, "x" | "y">,
-  nextPoint: Pick<PointerPoint, "x" | "y">,
+  previous: Pick<PointerPoint, "x" | "y">,
+  next: Pick<PointerPoint, "x" | "y">,
 ): Matrix3 {
-  return twistToScreenRotation(
-    pointerAngleAroundElement(element, previousPoint),
-    pointerAngleAroundElement(element, nextPoint),
-  );
+  const previousAngle = pointerAngleAroundElement(element, previous);
+  const nextAngle = pointerAngleAroundElement(element, next);
+  return screenAxisRotation({ zDegrees: radiansToDegrees(shortestAngleDelta(previousAngle, nextAngle)) });
 }
 
 function pointerAngleAroundElement(element: HTMLElement, point: Pick<PointerPoint, "x" | "y">): number {
@@ -1309,15 +1053,17 @@ function formatEulerAngle(value: number): string {
 
 function matricesAreClose(first: Matrix3, second: Matrix3): boolean {
   return first.every((row, rowIndex) =>
-    row.every((value, columnIndex) => Math.abs(value - second[rowIndex][columnIndex]) < 0.000_001),
+    row.every((entry, columnIndex) => Math.abs(entry - second[rowIndex][columnIndex]) < 1e-6),
   );
 }
 
 function filenameStemEnd(value: string): number {
-  return value.toLowerCase().endsWith(".png") ? value.length - 4 : value.length;
+  const lower = value.toLowerCase();
+  return lower.endsWith(".png") || lower.endsWith(".svg") ? value.length - 4 : value.length;
 }
 
-function filenameWithPng(value: string): string {
-  const trimmed = value.trim() || "logo.png";
-  return trimmed.toLowerCase().endsWith(".png") ? trimmed : `${trimmed}.png`;
+function withExtension(value: string, format: ExportFormat): string {
+  const trimmed = value.trim() || "logo";
+  const stem = trimmed.slice(0, filenameStemEnd(trimmed)) || "logo";
+  return `${stem}.${format}`;
 }

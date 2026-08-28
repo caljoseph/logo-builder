@@ -1,5 +1,4 @@
 import type { Vec3 } from "./rotation";
-import type { LatticeResolution } from "./types";
 
 export type IcosphereMesh = {
   vertices: Vec3[];
@@ -7,78 +6,154 @@ export type IcosphereMesh = {
   edges: [number, number][];
 };
 
-const meshCache = new Map<LatticeResolution, IcosphereMesh>();
+// A lattice reduced to what the renderer actually needs: curves to stroke, and
+// the points where they meet.
+export type LatticeGeometry = {
+  polylines: Vec3[][];
+  vertices: Vec3[];
+};
 
-export function createIcosphere(faceCount: LatticeResolution): IcosphereMesh {
-  const cached = meshCache.get(faceCount);
+export const MIN_FREQUENCY = 1;
+export const MAX_FREQUENCY = 16;
+
+const meshCache = new Map<number, IcosphereMesh>();
+const geometryCache = new Map<number, LatticeGeometry>();
+const PHI = (1 + Math.sqrt(5)) / 2;
+
+const BASE_VERTICES: Vec3[] = [
+  [-1, PHI, 0],
+  [1, PHI, 0],
+  [-1, -PHI, 0],
+  [1, -PHI, 0],
+  [0, -1, PHI],
+  [0, 1, PHI],
+  [0, -1, -PHI],
+  [0, 1, -PHI],
+  [PHI, 0, -1],
+  [PHI, 0, 1],
+  [-PHI, 0, -1],
+  [-PHI, 0, 1],
+];
+
+const BASE_FACES: [number, number, number][] = [
+  [0, 11, 5],
+  [0, 5, 1],
+  [0, 1, 7],
+  [0, 7, 10],
+  [0, 10, 11],
+  [1, 5, 9],
+  [5, 11, 4],
+  [11, 10, 2],
+  [10, 7, 6],
+  [7, 1, 8],
+  [3, 9, 4],
+  [3, 4, 2],
+  [3, 2, 6],
+  [3, 6, 8],
+  [3, 8, 9],
+  [4, 9, 5],
+  [2, 4, 11],
+  [6, 2, 10],
+  [8, 6, 7],
+  [9, 8, 1],
+];
+
+export function clampFrequency(value: number): number {
+  return Math.min(MAX_FREQUENCY, Math.max(MIN_FREQUENCY, Math.round(value)));
+}
+
+export function faceCountForFrequency(frequency: number): number {
+  return 20 * clampFrequency(frequency) ** 2;
+}
+
+// A class-I geodesic polyhedron at the given frequency: every icosahedron edge
+// is cut into `frequency` parts and the resulting triangular grid is projected
+// onto the sphere. Recursive 4-way subdivision only reaches frequencies that are
+// powers of two; this reaches every whole frequency, so face counts step
+// 20, 80, 180, 320, 500, ... instead of 20, 80, 320, 1280.
+export function createIcosphere(frequency: number): IcosphereMesh {
+  const steps = clampFrequency(frequency);
+  const cached = meshCache.get(steps);
 
   if (cached) {
     return cached;
   }
 
-  const subdivisions = {
-    20: 0,
-    80: 1,
-    320: 2,
-    1280: 3,
-    5120: 4,
-  }[faceCount];
-  const phi = (1 + Math.sqrt(5)) / 2;
-  const initialVertices: Vec3[] = [
-    [-1, phi, 0],
-    [1, phi, 0],
-    [-1, -phi, 0],
-    [1, -phi, 0],
-    [0, -1, phi],
-    [0, 1, phi],
-    [0, -1, -phi],
-    [0, 1, -phi],
-    [phi, 0, -1],
-    [phi, 0, 1],
-    [-phi, 0, -1],
-    [-phi, 0, 1],
-  ];
-  let faces: [number, number, number][] = [
-    [0, 11, 5],
-    [0, 5, 1],
-    [0, 1, 7],
-    [0, 7, 10],
-    [0, 10, 11],
-    [1, 5, 9],
-    [5, 11, 4],
-    [11, 10, 2],
-    [10, 7, 6],
-    [7, 1, 8],
-    [3, 9, 4],
-    [3, 4, 2],
-    [3, 2, 6],
-    [3, 6, 8],
-    [3, 8, 9],
-    [4, 9, 5],
-    [2, 4, 11],
-    [6, 2, 10],
-    [8, 6, 7],
-    [9, 8, 1],
-  ];
-  const vertices = initialVertices.map(normalize);
+  const corners = BASE_VERTICES.map(normalize);
+  const vertices: Vec3[] = [];
+  const indexByKey = new Map<string, number>();
+  const faces: [number, number, number][] = [];
 
-  for (let step = 0; step < subdivisions; step += 1) {
-    const midpointCache = new Map<string, number>();
-    const nextFaces: [number, number, number][] = [];
+  const vertexIndex = (point: Vec3): number => {
+    const unit = normalize(point);
+    const key = `${unit[0].toFixed(6)}:${unit[1].toFixed(6)}:${unit[2].toFixed(6)}`;
+    const existing = indexByKey.get(key);
 
-    for (const [a, b, c] of faces) {
-      const ab = midpointIndex(vertices, midpointCache, a, b);
-      const bc = midpointIndex(vertices, midpointCache, b, c);
-      const ca = midpointIndex(vertices, midpointCache, c, a);
-      nextFaces.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]);
+    if (existing !== undefined) {
+      return existing;
     }
 
-    faces = nextFaces;
+    const index = vertices.length;
+    vertices.push(unit);
+    indexByKey.set(key, index);
+    return index;
+  };
+
+  for (const [a, b, c] of BASE_FACES) {
+    const cornerA = corners[a];
+    const cornerB = corners[b];
+    const cornerC = corners[c];
+    // rows[i][j] is the grid point i steps toward B and j steps toward C.
+    const rows: number[][] = [];
+
+    for (let i = 0; i <= steps; i += 1) {
+      const row: number[] = [];
+
+      for (let j = 0; j <= steps - i; j += 1) {
+        const weightA = steps - i - j;
+        row.push(
+          vertexIndex([
+            (cornerA[0] * weightA + cornerB[0] * i + cornerC[0] * j) / steps,
+            (cornerA[1] * weightA + cornerB[1] * i + cornerC[1] * j) / steps,
+            (cornerA[2] * weightA + cornerB[2] * i + cornerC[2] * j) / steps,
+          ]),
+        );
+      }
+
+      rows.push(row);
+    }
+
+    for (let i = 0; i < steps; i += 1) {
+      for (let j = 0; j < steps - i; j += 1) {
+        faces.push([rows[i][j], rows[i + 1][j], rows[i][j + 1]]);
+
+        if (j < steps - i - 1) {
+          faces.push([rows[i + 1][j], rows[i + 1][j + 1], rows[i][j + 1]]);
+        }
+      }
+    }
   }
 
-  const mesh = { vertices, faces, edges: uniqueEdges(faces) };
-  meshCache.set(faceCount, mesh);
+  const mesh: IcosphereMesh = { vertices, faces, edges: uniqueEdges(faces) };
+  meshCache.set(steps, mesh);
   return mesh;
+}
+
+export function createLatticeGeometry(frequency: number): LatticeGeometry {
+  const steps = clampFrequency(frequency);
+  const cached = geometryCache.get(steps);
+
+  if (cached) {
+    return cached;
+  }
+
+  const mesh = createIcosphere(steps);
+  const geometry: LatticeGeometry = {
+    polylines: mesh.edges.map(([a, b]) => sampleGreatCircleEdge(mesh.vertices[a], mesh.vertices[b])),
+    vertices: mesh.vertices,
+  };
+  geometryCache.set(steps, geometry);
+  return geometry;
 }
 
 export function sampleGreatCircleEdge(start: Vec3, end: Vec3): Vec3[] {
@@ -105,24 +180,6 @@ export function sampleGreatCircleEdge(start: Vec3, end: Vec3): Vec3[] {
   }
 
   return points;
-}
-
-function midpointIndex(vertices: Vec3[], cache: Map<string, number>, a: number, b: number): number {
-  const key = a < b ? `${a}:${b}` : `${b}:${a}`;
-  const cached = cache.get(key);
-
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  const index = vertices.length;
-  vertices.push(normalize([
-    (vertices[a][0] + vertices[b][0]) / 2,
-    (vertices[a][1] + vertices[b][1]) / 2,
-    (vertices[a][2] + vertices[b][2]) / 2,
-  ]));
-  cache.set(key, index);
-  return index;
 }
 
 function uniqueEdges(faces: [number, number, number][]): [number, number][] {

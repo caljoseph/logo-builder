@@ -1,19 +1,25 @@
 import type {
+  BackEdgeMode,
   BackgroundLayer,
+  BorderLayer,
   ColorMode,
   CoverLayer,
   LatticeLayer,
+  LatticeOffset,
   LatticeResolution,
   LogoState,
   SphereLayer,
-  StackItem,
 } from "./types";
 import { identityRotation, legacyEulerToMatrix, normalizeRotation, type Matrix3 } from "./rotation";
+import { clampFrequency } from "./icosphere";
 
 const STORAGE_KEY = "logoBuilder.state.v1";
 const DEFAULT_LINE_WIDTH = 3;
-const DEFAULT_DOT_SIZE = 4;
-const LATTICE_RESOLUTIONS = new Set<LatticeResolution>([20, 80, 320, 1280, 5120]);
+const DEFAULT_BORDER_WIDTH = 6;
+export const BORDER_WIDTH_MIN = 1;
+export const BORDER_WIDTH_MAX = 24;
+const DEFAULT_FREQUENCY = 4;
+export const DASH_LENGTH_MAX = 24;
 
 export function createBackground(overrides: Partial<BackgroundLayer> = {}): BackgroundLayer {
   return normalizePaint({ color: "#ffffff", alpha: 1, colorMode: "normal", ...overrides }, "#ffffff");
@@ -24,12 +30,25 @@ export function createLattice(overrides: Partial<LatticeLayer> = {}): LatticeLay
 
   return {
     ...base,
-    resolution: normalizeLatticeResolution(overrides.resolution, 320),
+    frequency: normalizeFrequency(
+      overrides.frequency ?? frequencyFromFaceCount((overrides as { resolution?: unknown }).resolution),
+    ),
     lineWidth: normalizeLineWidth(overrides.lineWidth),
-    showIntersections: overrides.showIntersections === true,
-    dotSize: normalizeDotSize(overrides.dotSize),
-    rotation: isMatrix3(overrides.rotation) ? normalizeRotation(overrides.rotation) : identityRotation(),
-    selected: overrides.selected === true,
+    cutFill: overrides.cutFill !== false,
+    outline: overrides.outline !== false,
+    outlineWidth: normalizeBorderWidth(overrides.outlineWidth, DEFAULT_LINE_WIDTH),
+    backEdges: normalizeBackEdges(overrides),
+    dashLength: normalizeDashLength(overrides.dashLength),
+    offset: normalizeOffset(overrides.offset),
+  };
+}
+
+export function createBorder(overrides: Partial<BorderLayer> = {}): BorderLayer {
+  const paint = normalizePaint({ color: "#000000", alpha: 1, colorMode: "normal", ...overrides }, "#000000");
+
+  return {
+    ...paint,
+    width: normalizeBorderWidth(overrides.width),
   };
 }
 
@@ -37,12 +56,8 @@ export function createCover(overrides: Partial<CoverLayer> = {}): CoverLayer {
   const paint = normalizePaint({ color: "#000000", alpha: 1, colorMode: "normal", ...overrides }, "#000000");
 
   return {
-    id: crypto.randomUUID(),
     ...paint,
-    rotation: isMatrix3(overrides.rotation) ? normalizeRotation(overrides.rotation) : identityRotation(),
-    selected: overrides.selected === true,
     lattice: overrides.lattice ? createLattice(overrides.lattice) : undefined,
-    ...pickDefined({ id: overrides.id }),
   };
 }
 
@@ -51,8 +66,6 @@ export function createBase(overrides: Partial<SphereLayer> = {}): SphereLayer {
 
   return {
     ...paint,
-    rotation: isMatrix3(overrides.rotation) ? normalizeRotation(overrides.rotation) : identityRotation(),
-    selected: overrides.selected === true,
     lattice: overrides.lattice ? createLattice(overrides.lattice) : undefined,
   };
 }
@@ -62,23 +75,23 @@ export function createLatticeFromSource(source: BackgroundLayer | SphereLayer | 
     colorMode: source.colorMode,
     color: source.color,
     alpha: source.colorMode === "knockout" ? 1 : source.alpha,
-    resolution: 320,
+    frequency: DEFAULT_FREQUENCY,
     lineWidth: DEFAULT_LINE_WIDTH,
-    showIntersections: false,
-    dotSize: DEFAULT_DOT_SIZE,
-    rotation: identityRotation(),
-    selected: true,
+    cutFill: true,
+    outline: true,
+    outlineWidth: DEFAULT_LINE_WIDTH,
+    backEdges: "off",
+    dashLength: 0,
+    offset: { roll: 0, pitch: 0, yaw: 0 },
   });
 }
 
 export function defaultLogoState(): LogoState {
-  const cover = createCover({ selected: true });
-
   return {
     background: createBackground(),
     base: createBase(),
-    covers: [cover],
-    stack: [{ kind: "cover", id: cover.id }],
+    cover: createCover(),
+    rotation: identityRotation(),
   };
 }
 
@@ -113,19 +126,62 @@ function normalizeLineWidth(value: unknown): number {
     : DEFAULT_LINE_WIDTH;
 }
 
-function normalizeDotSize(value: unknown): number {
+function normalizeBorderWidth(value: unknown, fallback = DEFAULT_BORDER_WIDTH): number {
   return typeof value === "number" && Number.isFinite(value)
-    ? Math.min(12, Math.max(1, value))
-    : DEFAULT_DOT_SIZE;
+    ? Math.min(BORDER_WIDTH_MAX, Math.max(BORDER_WIDTH_MIN, value))
+    : fallback;
 }
 
-function normalizeLatticeResolution(value: unknown, fallback: LatticeResolution): LatticeResolution {
-  return LATTICE_RESOLUTIONS.has(value as LatticeResolution) ? (value as LatticeResolution) : fallback;
+function normalizeFrequency(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? clampFrequency(value) : DEFAULT_FREQUENCY;
 }
 
-function normalizeLegacyLatticeResolution(value: unknown): LatticeResolution | "none" {
-  return LATTICE_RESOLUTIONS.has(value as LatticeResolution) ? (value as LatticeResolution) : "none";
+// Older documents stored this as a pair of booleans.
+function normalizeBackEdges(overrides: Partial<LatticeLayer> & { seeThrough?: unknown }): BackEdgeMode {
+  const value = overrides.backEdges as unknown;
+
+  if (value === "mask" || value === "both" || value === "through" || value === "off") {
+    return value;
+  }
+
+  if (value === true) {
+    return overrides.seeThrough === true ? "both" : "mask";
+  }
+
+  return "off";
 }
+
+function normalizeOffset(value: unknown): LatticeOffset {
+  const candidate = (value && typeof value === "object" ? value : {}) as Partial<LatticeOffset>;
+
+  return {
+    roll: normalizeOffsetAngle(candidate.roll),
+    pitch: normalizeOffsetAngle(candidate.pitch),
+    yaw: normalizeOffsetAngle(candidate.yaw),
+  };
+}
+
+function normalizeOffsetAngle(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(360, Math.max(0, value)) : 0;
+}
+
+function normalizeDashLength(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(DASH_LENGTH_MAX, Math.max(0, value))
+    : 0;
+}
+
+// Documents written before frequency subdivision stored a face count. Those
+// counts are all 20 * m^2, so the frequency is recoverable exactly.
+function frequencyFromFaceCount(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 20) {
+    return undefined;
+  }
+
+  return clampFrequency(Math.sqrt(value / 20));
+}
+
+
 
 function normalizeAngle(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -144,150 +200,80 @@ function isMatrix3(value: unknown): value is Matrix3 {
   );
 }
 
-function normalizeCover(value: unknown): CoverLayer | null {
-  if (!value || typeof value !== "object") {
-    return null;
+type LegacyPaintSource = {
+  colorMode?: unknown;
+  color?: unknown;
+  alpha?: unknown;
+  lattice?: unknown;
+  latticeResolution?: unknown;
+  lineWidth?: unknown;
+};
+
+function normalizeLatticeFrom(candidate: LegacyPaintSource, paint: BackgroundLayer): LatticeLayer | undefined {
+  if (candidate.lattice) {
+    return createLattice(candidate.lattice as Partial<LatticeLayer>);
   }
 
-  const candidate = value as Partial<CoverLayer> & {
-    roll?: unknown;
-    pitch?: unknown;
-    yaw?: unknown;
-    latticeResolution?: unknown;
-    lineWidth?: unknown;
-    latticeRotation?: unknown;
-    latticeSelected?: unknown;
-  };
-  const rotation = isMatrix3(candidate.rotation)
-    ? normalizeRotation(candidate.rotation)
-    : legacyEulerToMatrix(
-        normalizeAngle(candidate.roll),
-        normalizeAngle(candidate.pitch),
-        normalizeAngle(candidate.yaw),
-      );
-  const cover = createCover({
-    id: typeof candidate.id === "string" && candidate.id.length > 0 ? candidate.id : crypto.randomUUID(),
-    colorMode: candidate.colorMode,
-    color: normalizeColor(candidate.color, "#000000"),
-    alpha: clampAlpha(candidate.alpha, 1),
-    rotation,
-    selected: candidate.selected === true,
-    lattice: candidate.lattice ? createLattice(candidate.lattice) : undefined,
+  const legacyFrequency = frequencyFromFaceCount(candidate.latticeResolution);
+
+  if (legacyFrequency === undefined) {
+    return undefined;
+  }
+
+  return createLattice({
+    colorMode: paint.colorMode,
+    color: paint.color,
+    alpha: paint.alpha,
+    frequency: legacyFrequency,
+    lineWidth: normalizeLineWidth(candidate.lineWidth),
   });
+}
 
-  if (!cover.lattice) {
-    const legacyResolution = normalizeLegacyLatticeResolution(candidate.latticeResolution);
+function normalizeCover(value: unknown): CoverLayer {
+  const candidate = (value && typeof value === "object" ? value : {}) as LegacyPaintSource;
+  const paint = normalizePaint(
+    { colorMode: candidate.colorMode, color: normalizeColor(candidate.color, "#000000"), alpha: candidate.alpha },
+    "#000000",
+  );
 
-    if (legacyResolution !== "none") {
-      cover.lattice = createLattice({
-        colorMode: cover.colorMode,
-        color: cover.color,
-        alpha: cover.alpha,
-        resolution: legacyResolution,
-        lineWidth: normalizeLineWidth(candidate.lineWidth),
-        rotation: isMatrix3(candidate.latticeRotation)
-          ? normalizeRotation(candidate.latticeRotation)
-          : identityRotation(),
-        selected: candidate.latticeSelected === true,
-      });
-    }
-  }
-
-  return cover;
+  return { ...paint, lattice: normalizeLatticeFrom(candidate, paint) };
 }
 
 function normalizeBase(value: unknown): SphereLayer {
-  const candidate = value && typeof value === "object"
-    ? (value as Partial<SphereLayer> & {
-        latticeResolution?: unknown;
-        lineWidth?: unknown;
-        latticeRotation?: unknown;
-        latticeSelected?: unknown;
-      })
-    : {};
-  const base = createBase({
-    colorMode: candidate.colorMode,
-    color: normalizeColor(candidate.color, "#ffffff"),
-    alpha: clampAlpha(candidate.alpha, 1),
-    rotation: isMatrix3(candidate.rotation) ? normalizeRotation(candidate.rotation) : identityRotation(),
-    selected: candidate.selected === true,
-    lattice: candidate.lattice ? createLattice(candidate.lattice) : undefined,
-  });
+  const candidate = (value && typeof value === "object" ? value : {}) as LegacyPaintSource;
+  const paint = normalizePaint(
+    { colorMode: candidate.colorMode, color: normalizeColor(candidate.color, "#ffffff"), alpha: candidate.alpha },
+    "#ffffff",
+  );
 
-  if (!base.lattice) {
-    const legacyResolution = normalizeLegacyLatticeResolution(candidate.latticeResolution);
-
-    if (legacyResolution !== "none") {
-      base.lattice = createLattice({
-        colorMode: base.colorMode,
-        color: base.color,
-        alpha: base.alpha,
-        resolution: legacyResolution,
-        lineWidth: normalizeLineWidth(candidate.lineWidth),
-        rotation: isMatrix3(candidate.latticeRotation)
-          ? normalizeRotation(candidate.latticeRotation)
-          : identityRotation(),
-        selected: candidate.latticeSelected === true,
-      });
-    }
-  }
-
-  return base;
+  return { ...paint, lattice: normalizeLatticeFrom(candidate, paint) };
 }
 
-function normalizeStack(value: unknown, covers: CoverLayer[]): StackItem[] {
-  const coverIds = new Set(covers.map((cover) => cover.id));
-  const latticeIds = new Set(covers.filter((cover) => cover.lattice).map((cover) => cover.id));
-  const seen = new Set<string>();
-  const stack: StackItem[] = [];
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      if (!item || typeof item !== "object") {
-        continue;
-      }
-
-      const candidate = item as Partial<StackItem>;
-      const key = `${candidate.kind}:${candidate.id}`;
-
-      if (
-        candidate.kind === "cover" &&
-        typeof candidate.id === "string" &&
-        coverIds.has(candidate.id) &&
-        !seen.has(key)
-      ) {
-        stack.push({ kind: "cover", id: candidate.id });
-        seen.add(key);
-      }
-
-      if (
-        candidate.kind === "coverLattice" &&
-        typeof candidate.id === "string" &&
-        latticeIds.has(candidate.id) &&
-        !seen.has(key)
-      ) {
-        stack.push({ kind: "coverLattice", id: candidate.id });
-        seen.add(key);
-      }
-    }
+// Older documents stored a rotation per layer and an array of covers. The single
+// remaining cover keeps its own orientation, so that matrix becomes the one
+// rotation the whole logo now shares.
+function normalizeRotationFrom(parsed: Record<string, unknown>, legacyCover: unknown): Matrix3 {
+  if (isMatrix3(parsed.rotation)) {
+    return normalizeRotation(parsed.rotation);
   }
 
-  for (const cover of covers) {
-    const coverKey = `cover:${cover.id}`;
-    const latticeKey = `coverLattice:${cover.id}`;
+  const candidate = (legacyCover && typeof legacyCover === "object" ? legacyCover : {}) as Record<string, unknown>;
 
-    if (!seen.has(coverKey)) {
-      stack.push({ kind: "cover", id: cover.id });
-      seen.add(coverKey);
-    }
-
-    if (cover.lattice && !seen.has(latticeKey)) {
-      stack.push({ kind: "coverLattice", id: cover.id });
-      seen.add(latticeKey);
-    }
+  if (isMatrix3(candidate.rotation)) {
+    return normalizeRotation(candidate.rotation);
   }
 
-  return stack;
+  if (candidate.roll !== undefined || candidate.pitch !== undefined || candidate.yaw !== undefined) {
+    return normalizeRotation(
+      legacyEulerToMatrix(
+        normalizeAngle(candidate.roll),
+        normalizeAngle(candidate.pitch),
+        normalizeAngle(candidate.yaw),
+      ),
+    );
+  }
+
+  return identityRotation();
 }
 
 export function loadLogoState(): LogoState {
@@ -298,17 +284,16 @@ export function loadLogoState(): LogoState {
       return defaultLogoState();
     }
 
-    const parsed = JSON.parse(raw) as Partial<LogoState>;
-    const covers = Array.isArray(parsed.covers)
-      ? parsed.covers.map(normalizeCover).filter((cover): cover is CoverLayer => Boolean(cover))
-      : [];
-    const validCovers = covers.length > 0 ? covers : [createCover({ selected: true })];
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const legacyCover = Array.isArray(parsed.covers) ? parsed.covers[0] : undefined;
+    const coverSource = parsed.cover ?? legacyCover;
 
     return {
-      background: createBackground(parsed.background),
+      background: createBackground(parsed.background as Partial<BackgroundLayer>),
       base: normalizeBase(parsed.base),
-      covers: validCovers,
-      stack: normalizeStack(parsed.stack, validCovers),
+      cover: normalizeCover(coverSource),
+      border: parsed.border ? createBorder(parsed.border as Partial<BorderLayer>) : undefined,
+      rotation: normalizeRotationFrom(parsed, legacyCover),
     };
   } catch {
     return defaultLogoState();
@@ -317,8 +302,4 @@ export function loadLogoState(): LogoState {
 
 export function saveLogoState(state: LogoState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function pickDefined<T extends Record<string, unknown>>(value: T): Partial<T> {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
 }

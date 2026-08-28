@@ -1,6 +1,6 @@
-import type { ColorMode, CoverLayer, LatticeLayer, LogoState, PaintStyle, StackItem } from "./types";
-import { createIcosphere, sampleGreatCircleEdge } from "./icosphere";
-import { multiplyMatrixVector, transpose, type Matrix3, type Vec3 } from "./rotation";
+import type { BorderLayer, ColorMode, CoverLayer, LatticeLayer, LogoState, PaintStyle } from "./types";
+import { createLatticeGeometry } from "./icosphere";
+import { eulerToMatrix, multiplyMatrices, multiplyMatrixVector, transpose, type Matrix3, type Vec3 } from "./rotation";
 
 type Vec2 = [number, number];
 
@@ -12,7 +12,8 @@ type Edge = {
 
 const SEAM_SAMPLES = 4000;
 const CIRCLE_SAMPLES = 1000;
-const DEFAULT_EXPORT_PADDING = 0.14;
+export const DEFAULT_EXPORT_PADDING = 0.14;
+export const BACK_EDGE_ALPHA = 0.28;
 const seamPoints = createSeamPoints(SEAM_SAMPLES);
 const seamProjection = seamPoints.map(stereographicProject);
 
@@ -72,40 +73,121 @@ function renderLogoLayers(
   centerY: number,
   radius: number,
 ): void {
-  drawCirclePaint(context, centerX, centerY, radius, state.base);
+  const rotation = state.rotation;
+  const coverPolygons = visibleCoverPolygons(rotation);
 
-  if (state.base.lattice) {
-    drawLatticeLayer(context, {
-      maskPolygons: [circlePolygon()],
-      lattice: state.base.lattice,
-      centerX,
-      centerY,
-      radius,
-    });
+  drawLayerGroup(context, {
+    paint: state.base,
+    lattice: state.base.lattice,
+    maskPolygons: [circlePolygon()],
+    rotation,
+    centerX,
+    centerY,
+    radius,
+    drawFill: (target) => drawCirclePaint(target, centerX, centerY, radius, state.base),
+  });
+
+  drawLayerGroup(context, {
+    paint: state.cover,
+    lattice: state.cover.lattice,
+    maskPolygons: coverPolygons,
+    rotation,
+    centerX,
+    centerY,
+    radius,
+    drawFill: (target) => drawCover(target, state.cover, coverPolygons, centerX, centerY, radius),
+  });
+
+  if (state.border) {
+    strokeBorder(context, state.border, centerX, centerY, radius);
+  }
+}
+
+// The border rides on top of every other layer so the ball keeps a clean rim
+// even where a cover reaches the silhouette.
+function strokeBorder(
+  context: CanvasRenderingContext2D,
+  border: BorderLayer,
+  centerX: number,
+  centerY: number,
+  radius: number,
+): void {
+  if (border.colorMode === "normal" && border.alpha <= 0) {
+    return;
   }
 
-  for (const item of state.stack) {
-    const cover = findCover(state, item);
+  context.save();
+  applyPaint(context, border);
+  context.lineWidth = scaledLineWidth(border.width, radius);
+  context.beginPath();
+  context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
+}
 
-    if (!cover) {
-      continue;
+type LayerGroupOptions = {
+  paint: PaintStyle;
+  lattice?: LatticeLayer;
+  maskPolygons: Vec2[][];
+  rotation: Matrix3;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  drawFill: (target: CanvasRenderingContext2D) => void;
+};
+
+// A layer is its fill plus the lattice drawn over it. When the lattice cuts the
+// fill, the fill has to land on its own surface first: erasing on the shared
+// canvas would punch through everything already painted underneath, instead of
+// only through this layer.
+function drawLayerGroup(context: CanvasRenderingContext2D, options: LayerGroupOptions): void {
+  const { paint, lattice, maskPolygons, rotation, centerX, centerY, radius, drawFill } = options;
+  // The mask keeps the logo's own rotation; only the mesh takes the offset, so
+  // the lines can spin inside a cover that stays where it is.
+  const latticeOptions = lattice
+    ? { maskPolygons, lattice, rotation: latticeRotation(rotation, lattice), centerX, centerY, radius }
+    : null;
+  const shouldCut = Boolean(lattice?.cutFill) && paint.colorMode === "normal" && paint.alpha > 0;
+
+  if (!shouldCut || !latticeOptions) {
+    drawFill(context);
+
+    if (latticeOptions) {
+      drawLatticeLayer(context, latticeOptions);
     }
 
-    if (item.kind === "cover") {
-      drawCover(context, cover, centerX, centerY, radius);
-    }
-
-    if (item.kind === "coverLattice" && cover.lattice) {
-      const polygons = visibleCoverPolygons(cover.rotation);
-      drawLatticeLayer(context, {
-        maskPolygons: polygons,
-        lattice: cover.lattice,
-        centerX,
-        centerY,
-        radius,
-      });
-    }
+    return;
   }
+
+  const scratch = createScratchContext(context);
+
+  if (!scratch) {
+    drawFill(context);
+    drawLatticeLayer(context, latticeOptions);
+    return;
+  }
+
+  drawFill(scratch);
+  drawLatticeLayer(scratch, { ...latticeOptions, cut: true });
+  context.drawImage(scratch.canvas, 0, 0);
+  drawLatticeLayer(context, latticeOptions);
+}
+
+export function latticeRotation(rotation: Matrix3, lattice: LatticeLayer): Matrix3 {
+  const { roll, pitch, yaw } = lattice.offset;
+
+  if (roll === 0 && pitch === 0 && yaw === 0) {
+    return rotation;
+  }
+
+  return multiplyMatrices(rotation, eulerToMatrix(roll, pitch, yaw));
+}
+
+function createScratchContext(context: CanvasRenderingContext2D): CanvasRenderingContext2D | null {
+  const scratch = context.canvas.ownerDocument.createElement("canvas");
+  scratch.width = context.canvas.width;
+  scratch.height = context.canvas.height;
+  return scratch.getContext("2d");
 }
 
 export async function exportLogoPng(state: LogoState): Promise<Blob> {
@@ -144,6 +226,7 @@ function createSeamPoints(samples: number): Vec3[] {
 function drawCover(
   context: CanvasRenderingContext2D,
   cover: CoverLayer,
+  polygons: Vec2[][],
   centerX: number,
   centerY: number,
   radius: number,
@@ -151,9 +234,6 @@ function drawCover(
   if (cover.colorMode === "normal" && cover.alpha <= 0) {
     return;
   }
-
-  const rotation = cover.rotation;
-  const polygons = visibleCoverPolygons(rotation);
 
   context.save();
   applyPaint(context, cover);
@@ -185,116 +265,168 @@ export function visibleCoverPolygons(rotation: Matrix3): Vec2[][] {
 type LatticeDrawOptions = {
   maskPolygons: Vec2[][];
   lattice: LatticeLayer;
+  rotation: Matrix3;
   centerX: number;
   centerY: number;
   radius: number;
+  // Draw the same geometry as an eraser instead of as paint.
+  cut?: boolean;
 };
 
 function drawLatticeLayer(
   context: CanvasRenderingContext2D,
-  { maskPolygons, lattice, centerX, centerY, radius }: LatticeDrawOptions,
+  { maskPolygons, lattice, rotation, centerX, centerY, radius, cut = false }: LatticeDrawOptions,
 ): void {
-  if ((lattice.colorMode === "normal" && lattice.alpha <= 0) || maskPolygons.length === 0) {
+  if ((!cut && lattice.colorMode === "normal" && lattice.alpha <= 0) || maskPolygons.length === 0) {
     return;
   }
 
-  const mesh = createIcosphere(lattice.resolution);
+  const geometry = createLatticeGeometry(lattice.frequency);
   const strokeWidth = scaledLineWidth(lattice.lineWidth, radius);
+  // Dashes belong to the mesh lines only; the outline and the dots stay solid.
+  const applyLatticePaint = (target: CanvasRenderingContext2D, dashed = false) => {
+    if (cut) {
+      applyPaint(target, { colorMode: "knockout", color: "#000000", alpha: 1 });
+    } else {
+      applyPaint(target, lattice);
+    }
+
+    target.setLineDash(dashed && lattice.dashLength > 0 ? [scaledLineWidth(lattice.dashLength, radius)] : []);
+  };
+
+  const edgePoints = geometry.polylines.map((points) =>
+    points.map((point) => multiplyMatrixVector(rotation, point)),
+  );
+
+  // Edges that curve around the far side of the sphere, drawn faintly so the
+  // lattice reads as a globe rather than a flat disc. See-through widens their
+  // clip from the lattice's own mask to the whole ball, so the far side shows
+  // across the part of the sphere no lattice covers.
+  if (lattice.backEdges !== "off") {
+    context.save();
+
+    if (lattice.backEdges === "through") {
+      // Circle and mask in one path, filled even-odd: the ball minus whatever
+      // the lattice covers, leaving only the bare half.
+      beginMaskPath(context, [circlePolygon(), ...maskPolygons], centerX, centerY, radius);
+      context.clip("evenodd");
+    } else {
+      beginMaskPath(context, lattice.backEdges === "both" ? [circlePolygon()] : maskPolygons, centerX, centerY, radius);
+      context.clip();
+    }
+
+    applyLatticePaint(context, true);
+    context.lineWidth = strokeWidth;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    if (!cut) {
+      context.globalAlpha = BACK_EDGE_ALPHA;
+    }
+
+    context.beginPath();
+
+    for (const points of edgePoints) {
+      appendVisiblePolyline(context, points, centerX, centerY, radius, -1);
+    }
+
+    context.stroke();
+    context.restore();
+  }
 
   context.save();
   beginMaskPath(context, maskPolygons, centerX, centerY, radius);
   context.clip();
-  applyPaint(context, lattice);
+  applyLatticePaint(context, true);
   context.lineWidth = strokeWidth;
   context.lineCap = "round";
   context.lineJoin = "round";
 
-  for (const [startIndex, endIndex] of mesh.edges) {
-    const points = sampleGreatCircleEdge(mesh.vertices[startIndex], mesh.vertices[endIndex]).map((point) =>
-      multiplyMatrixVector(lattice.rotation, point),
-    );
-    drawFrontPolyline(context, points, centerX, centerY, radius);
+  // Every front-facing edge goes into one path and is stroked once. Stroking
+  // each edge separately would composite the shared vertices five or six times
+  // over, blooming them into dark knots at any alpha below 1.
+  context.beginPath();
+
+  for (const points of edgePoints) {
+    appendVisiblePolyline(context, points, centerX, centerY, radius, 1);
   }
 
-  context.restore();
-
-  context.save();
-  applyPaint(context, lattice);
-  context.lineWidth = strokeWidth;
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  beginMaskPath(context, maskPolygons, centerX, centerY, radius);
   context.stroke();
   context.restore();
 
-  if (lattice.showIntersections) {
-    const dotRadius = scaledLineWidth(lattice.dotSize, radius) / 2;
-
+  if (lattice.outline) {
     context.save();
-    applyPaint(context, lattice);
-
-    for (const vertex of mesh.vertices) {
-      const rotated = multiplyMatrixVector(lattice.rotation, vertex);
-
-      if (rotated[2] < 0 || !pointInAnyPolygon([rotated[0], rotated[1]], maskPolygons)) {
-        continue;
-      }
-
-      const [x, y] = toCanvas(rotated, centerX, centerY, radius);
-      context.beginPath();
-      context.arc(x, y, dotRadius, 0, Math.PI * 2);
-      context.fill();
-    }
-
+    applyLatticePaint(context);
+    context.lineWidth = scaledLineWidth(lattice.outlineWidth, radius);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    beginMaskPath(context, maskPolygons, centerX, centerY, radius);
+    context.stroke();
     context.restore();
   }
+
 }
 
-function drawFrontPolyline(
+// Splits one edge into the runs that face the viewer (side 1) or face away
+// (side -1), cutting exactly at the horizon. Shared by both renderers: the
+// canvas one strokes the runs, the SVG one serializes them.
+export function visibleRuns(points: Vec3[], side: 1 | -1): Vec3[][] {
+  const isVisible = (point: Vec3) => point[2] * side >= 0;
+  const runs: Vec3[][] = [];
+  let current: Vec3[] | null = null;
+
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const previous = points[index - 1];
+
+    if (previous && previous[2] * point[2] < 0) {
+      const crossing = interpolateZCrossing(previous, point);
+
+      if (current) {
+        current.push(crossing);
+        runs.push(current);
+        current = null;
+      } else if (isVisible(point)) {
+        current = [crossing];
+      }
+    }
+
+    if (!isVisible(point)) {
+      continue;
+    }
+
+    if (!current) {
+      current = [point];
+    } else {
+      current.push(point);
+    }
+  }
+
+  if (current && current.length > 1) {
+    runs.push(current);
+  }
+
+  return runs;
+}
+
+function appendVisiblePolyline(
   context: CanvasRenderingContext2D,
   points: Vec3[],
   centerX: number,
   centerY: number,
   radius: number,
+  side: 1 | -1,
 ): void {
-  let drawing = false;
+  for (const run of visibleRuns(points, side)) {
+    run.forEach((point, index) => {
+      const [x, y] = toCanvas(point, centerX, centerY, radius);
 
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index];
-    const previous = points[index - 1];
-
-    if (previous && previous[2] * current[2] < 0) {
-      const crossing = interpolateZCrossing(previous, current);
-      const [x, y] = toCanvas(crossing, centerX, centerY, radius);
-
-      if (drawing) {
-        context.lineTo(x, y);
-        context.stroke();
-        drawing = false;
-      } else if (current[2] >= 0) {
-        context.beginPath();
+      if (index === 0) {
         context.moveTo(x, y);
-        drawing = true;
+      } else {
+        context.lineTo(x, y);
       }
-    }
-
-    if (current[2] < 0) {
-      continue;
-    }
-
-    const [x, y] = toCanvas(current, centerX, centerY, radius);
-
-    if (!drawing) {
-      context.beginPath();
-      context.moveTo(x, y);
-      drawing = true;
-    } else {
-      context.lineTo(x, y);
-    }
-  }
-
-  if (drawing) {
-    context.stroke();
+    });
   }
 }
 
@@ -324,7 +456,7 @@ function beginMaskPath(
   }
 }
 
-function toCanvas(point: Vec2 | Vec3, centerX: number, centerY: number, radius: number): Vec2 {
+export function toCanvas(point: Vec2 | Vec3, centerX: number, centerY: number, radius: number): Vec2 {
   return [centerX + point[0] * radius, centerY - point[1] * radius];
 }
 
@@ -338,7 +470,7 @@ function interpolateZCrossing(a: Vec3, b: Vec3): Vec3 {
   ];
 }
 
-function scaledLineWidth(lineWidth: number, radius: number): number {
+export function scaledLineWidth(lineWidth: number, radius: number): number {
   return Math.max(0.75, lineWidth * (radius / 340));
 }
 
@@ -507,7 +639,7 @@ function pointInAnyPolygon(point: Vec2, polygons: Vec2[][]): boolean {
   return polygons.some((polygon) => pointInPolygon(point, polygon));
 }
 
-function circlePolygon(): Vec2[] {
+export function circlePolygon(): Vec2[] {
   const points: Vec2[] = [];
 
   for (let index = 0; index < CIRCLE_SAMPLES; index += 1) {
@@ -577,7 +709,7 @@ function wrappedIndices(start: number, end: number, count: number): number[] {
   return indices;
 }
 
-function colorWithAlpha(hex: string, alpha: number): string {
+export function colorWithAlpha(hex: string, alpha: number): string {
   const red = Number.parseInt(hex.slice(1, 3), 16);
   const green = Number.parseInt(hex.slice(3, 5), 16);
   const blue = Number.parseInt(hex.slice(5, 7), 16);
@@ -598,10 +730,6 @@ function applyPaint(context: CanvasRenderingContext2D, paint: PaintStyle | { col
   context.globalAlpha = 1;
   context.fillStyle = colorWithAlpha(paint.color, paint.alpha);
   context.strokeStyle = colorWithAlpha(paint.color, paint.alpha);
-}
-
-function findCover(state: LogoState, item: StackItem): CoverLayer | undefined {
-  return state.covers.find((cover) => cover.id === item.id);
 }
 
 function positiveAngle(angle: number): number {

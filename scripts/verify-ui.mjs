@@ -165,8 +165,6 @@ function baseLayer(overrides = {}) {
     colorMode: "normal",
     color: "#ffffff",
     alpha: 1,
-    rotation: identityRotation(),
-    selected: false,
     ...overrides,
   };
 }
@@ -180,14 +178,11 @@ function backgroundLayer(overrides = {}) {
   };
 }
 
-function coverLayer(id, overrides = {}) {
+function coverLayer(overrides = {}) {
   return {
-    id,
     colorMode: "normal",
     color: "#000000",
     alpha: 1,
-    rotation: identityRotation(),
-    selected: false,
     ...overrides,
   };
 }
@@ -197,24 +192,23 @@ function latticeLayer(overrides = {}) {
     colorMode: "normal",
     color: "#000000",
     alpha: 1,
-    resolution: 320,
+    frequency: 4,
     lineWidth: 3,
-    showIntersections: false,
-    dotSize: 4,
-    rotation: identityRotation(),
-    selected: false,
+    cutFill: true,
+    outline: true,
+    outlineWidth: 3,
+    backEdges: "off",
+    dashLength: 0,
     ...overrides,
   };
 }
 
 function logoState(overrides = {}) {
-  const cover = coverLayer("cover-1", { selected: true });
-
   return {
     background: backgroundLayer(),
     base: baseLayer(),
-    covers: [cover],
-    stack: [{ kind: "cover", id: cover.id }],
+    cover: coverLayer(),
+    rotation: identityRotation(),
     ...overrides,
   };
 }
@@ -560,70 +554,22 @@ async function layerLabels(page) {
   );
 }
 
-async function selectedCount(page) {
-  return page.locator(".layer-swatch.selected").count();
+async function logoRotation(page) {
+  return (await appState(page)).rotation;
 }
 
-async function coverRotations(page) {
-  return (await appState(page)).covers.map((cover) => cover.rotation);
-}
-
-async function rotatableRotations(page) {
+async function setRotation(page, rotation) {
   const state = await appState(page);
-  const rotations = [state.base.rotation];
-
-  if (state.base.lattice) {
-    rotations.push(state.base.lattice.rotation);
-  }
-
-  for (const item of state.stack) {
-    const cover = state.covers.find((candidate) => candidate.id === item.id);
-
-    if (!cover) {
-      continue;
-    }
-
-    if (item.kind === "cover") {
-      rotations.push(cover.rotation);
-    } else if (cover.lattice) {
-      rotations.push(cover.lattice.rotation);
-    }
-  }
-
-  return rotations;
-}
-
-async function setAllRotations(page, rotation) {
-  const state = await appState(page);
-  state.base.rotation = rotation;
-  state.base.selected = true;
-  if (state.base.lattice) {
-    state.base.lattice.rotation = rotation;
-    state.base.lattice.selected = true;
-  }
-  state.covers = state.covers.map((cover) => ({
-    ...cover,
-    rotation,
-    selected: true,
-    lattice: cover.lattice ? { ...cover.lattice, rotation, selected: true } : cover.lattice,
-  }));
-  await setAppState(page, state);
-}
-
-async function setCoverFixtures(page, covers, stack) {
-  const state = await appState(page);
-  state.base.selected = false;
-  state.base.lattice = undefined;
-  state.covers = covers;
-  state.stack = stack ?? covers.flatMap((cover) => [
-    { kind: "cover", id: cover.id },
-    ...(cover.lattice ? [{ kind: "coverLattice", id: cover.id }] : []),
-  ]);
+  state.rotation = rotation;
   await setAppState(page, state);
 }
 
 async function eulerFieldValue(page, label) {
   return page.getByRole("textbox", { name: label }).inputValue();
+}
+
+async function eulerSlider(page, label) {
+  return page.getByRole("slider", { name: `${label} slider` });
 }
 
 async function assertEulerFieldValues(page, expected, message) {
@@ -636,23 +582,9 @@ async function assertEulerFieldValues(page, expected, message) {
   assert(JSON.stringify(actual) === JSON.stringify(expected), `${message} Expected ${JSON.stringify(expected)} but found ${JSON.stringify(actual)}.`);
 }
 
-async function expectDisabled(page, label) {
-  assert(await page.getByRole("textbox", { name: label }).isDisabled(), `${label} field is disabled.`);
-}
-
-async function longPress(locator, page) {
-  const box = await locator.boundingBox();
-  assert(box, "Long-press target has a bounding box.");
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.waitForTimeout(620);
-  await page.mouse.up();
-}
-
-async function doublePress(locator, page) {
-  await locator.click();
-  await page.waitForTimeout(80);
-  await locator.click();
+async function openLayerModal(page, name) {
+  await page.getByRole("button", { name, exact: true }).click();
+  await page.waitForSelector(".color-modal");
 }
 
 async function verifyLegacyMigration(page) {
@@ -661,8 +593,8 @@ async function verifyLegacyMigration(page) {
     localStorage.setItem(
       "logoBuilder.state.v1",
       JSON.stringify({
-        base: { color: "#ffffff", alpha: 1, latticeResolution: 20, latticeSelected: true },
-        covers: [{ id: "legacy-cover", color: "#000000", alpha: 1, roll: 12, pitch: 23, yaw: 34, selected: true }],
+        base: { color: "#ffffff", alpha: 1, latticeResolution: 20 },
+        covers: [{ id: "legacy-cover", color: "#123456", alpha: 1, roll: 12, pitch: 23, yaw: 34 }],
       }),
     );
   });
@@ -671,69 +603,77 @@ async function verifyLegacyMigration(page) {
 
   const state = await appState(page);
   assert(state.background.color === "#ffffff" && state.background.colorMode === "normal", "Legacy state gains a normal white background.");
-  assert(state.base.lattice?.resolution === 20 && state.base.lattice.selected === true, "Legacy base lattice fields migrate to a lattice object.");
-  assertMatrixClose(state.covers[0].rotation, eulerToMatrix(12, 23, 34), "Legacy roll/pitch/yaw state migrates to a rotation matrix.");
-  assert(JSON.stringify(state.stack) === JSON.stringify([{ kind: "cover", id: "legacy-cover" }]), "Missing stack rebuilds from cover order.");
+  assert(state.base.lattice?.frequency === 1, "Legacy base lattice face count migrates to a frequency.");
+  assert(state.cover.color === "#123456", "The first legacy cover becomes the single cover.");
+  assert(state.covers === undefined && state.stack === undefined, "Legacy cover array and stack are dropped.");
+  assertMatrixClose(state.rotation, eulerToMatrix(12, 23, 34), "Legacy per-cover roll/pitch/yaw becomes the shared rotation.");
 }
 
-async function verifyDoublePressModal(page) {
-  await resetApp(page);
-  assert((await selectedCount(page)) === 1, "Initial selected count is ready for double-press check.");
-  await doublePress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
-  await page.waitForSelector(".color-modal");
-  assert((await selectedCount(page)) === 1, "Double-press toggles twice and leaves selection where it started.");
-  await page.getByRole("button", { name: "Close" }).click();
-}
-
-async function verifySelectionAndBase(page) {
+async function verifyLayerRow(page) {
   await resetApp(page);
   assert(
-    JSON.stringify(await layerLabels(page)) === JSON.stringify(["Background", "Base sphere", "Cover 1", "Add cover"]),
-    "Initial row includes background, base, cover, and add.",
+    JSON.stringify(await layerLabels(page)) === JSON.stringify(["Background", "Base sphere", "Cover"]),
+    "Initial row is background, base, and the single cover.",
   );
-  assert((await selectedCount(page)) === 1, "Initial cover is selected.");
+  assert((await page.locator(".layer-swatch.selected").count()) === 0, "Layer swatches carry no selection state.");
 
-  await page.getByRole("button", { name: "Background" }).click();
-  let state = await appState(page);
-  assert(state.base.selected === true && state.covers[0].selected === true, "Background swatch selects all rotatable layers.");
-  assert((await selectedCount(page)) === 2, "Background itself is not visually selected.");
+  // Every swatch opens its own editor on a single tap.
+  for (const [name, label] of [["Background", "Layer color"], ["Base sphere", "Layer color"], ["Cover", "Layer color"]]) {
+    await openLayerModal(page, name);
+    assert((await page.getByRole("dialog").getAttribute("aria-label")) === label, `${name} swatch opens its editor.`);
+    await page.getByRole("button", { name: "Close" }).click();
+  }
 
-  await page.waitForTimeout(360);
-  await page.getByRole("button", { name: "Background" }).click();
-  state = await appState(page);
-  assert(state.base.selected === false && state.covers[0].selected === false, "Background swatch clears all rotatable selections.");
-  await assertEulerFieldValues(page, { Roll: "", Pitch: "", Yaw: "" }, "Euler fields blank when no rotatable layer is selected.");
-  await Promise.all([expectDisabled(page, "Roll"), expectDisabled(page, "Pitch"), expectDisabled(page, "Yaw")]);
-
-  await page.getByRole("button", { name: "Base sphere" }).click();
-  const beforeBase = (await appState(page)).base.rotation;
+  // Dragging always rotates the whole logo; there is nothing to select first.
+  const before = await logoRotation(page);
   await dragLogo(page, { dx: 70, dy: 0 });
-  state = await appState(page);
-  assert(maxMatrixDifference(state.base.rotation, beforeBase) > 0.001, "Selected base sphere rotates from drag.");
-  assert(state.covers[0].selected === false, "Selecting base sphere does not select the cover.");
+  assert(maxMatrixDifference(await logoRotation(page), before) > 0.001, "Dragging rotates the logo without any prior selection.");
 }
 
 async function verifyEulerEditor(page) {
   await resetApp(page);
-  await assertEulerFieldValues(page, { Roll: "0.0", Pitch: "0.0", Yaw: "0.0" }, "Initial Euler fields show the selected cover rotation.");
+  await assertEulerFieldValues(page, { Roll: "0.0", Pitch: "0.0", Yaw: "0.0" }, "Initial Euler readouts show the logo rotation.");
+
+  const rollSlider = await eulerSlider(page, "Roll");
+  const pitchSlider = await eulerSlider(page, "Pitch");
+  const yawSlider = await eulerSlider(page, "Yaw");
+
+  for (const [label, slider] of [["Roll", rollSlider], ["Pitch", pitchSlider], ["Yaw", yawSlider]]) {
+    const bounds = await slider.evaluate((input) => ({ min: input.min, max: input.max, step: input.step }));
+    assert(bounds.min === "0" && bounds.max === "360", `${label} slider spans 0 to 360.`);
+    assert(bounds.step === "0.1", `${label} slider steps by 0.1.`);
+  }
+
+  // A slider applies immediately, unlike the text field which waits for a commit.
+  await rollSlider.fill("45");
+  await assertEulerFieldValues(page, { Roll: "45.0", Pitch: "0.0", Yaw: "0.0" }, "Roll slider updates the readouts live.");
+  assertMatrixClose(await logoRotation(page), eulerToMatrix(45, 0, 0), "Roll slider applies the absolute Euler rotation.");
+
+  await pitchSlider.fill("30");
+  await assertEulerFieldValues(page, { Roll: "45.0", Pitch: "30.0", Yaw: "0.0" }, "Moving one slider leaves the other axes alone.");
+  assertMatrixClose(await logoRotation(page), eulerToMatrix(45, 30, 0), "Pitch slider applies the absolute Euler rotation.");
+
+  await yawSlider.fill("120");
+  assertMatrixClose(await logoRotation(page), eulerToMatrix(45, 30, 120), "Yaw slider applies the absolute Euler rotation.");
 
   const rollInput = page.getByRole("textbox", { name: "Roll" });
   const pitchInput = page.getByRole("textbox", { name: "Pitch" });
   const yawInput = page.getByRole("textbox", { name: "Yaw" });
+
+  await resetApp(page);
   const beforeDraft = await stableCanvasStats(page);
   await rollInput.fill("45");
   const afterDraft = await stableCanvasStats(page);
   assert(beforeDraft.checksum === afterDraft.checksum, "Typing in an Euler field does not mutate the logo before commit.");
   await rollInput.press("Enter");
   await assertEulerFieldValues(page, { Roll: "45.0", Pitch: "0.0", Yaw: "0.0" }, "Enter commits an Euler field edit.");
-  let [rotation] = await coverRotations(page);
-  assertMatrixClose(rotation, eulerToMatrix(45, 0, 0), "Enter commit applies the absolute Euler rotation.");
+  assertMatrixClose(await logoRotation(page), eulerToMatrix(45, 0, 0), "Enter commit applies the absolute Euler rotation.");
+  assert((await (await eulerSlider(page, "Roll")).inputValue()) === "45", "The slider tracks a committed text edit.");
 
   await pitchInput.fill("30");
   await pitchInput.evaluate((input) => input.blur());
   await assertEulerFieldValues(page, { Roll: "45.0", Pitch: "30.0", Yaw: "0.0" }, "Blur commits an Euler field edit.");
-  [rotation] = await coverRotations(page);
-  assertMatrixClose(rotation, eulerToMatrix(45, 30, 0), "Blur commit applies the absolute Euler rotation.");
+  assertMatrixClose(await logoRotation(page), eulerToMatrix(45, 30, 0), "Blur commit applies the absolute Euler rotation.");
 
   await pitchInput.fill("-20");
   await pitchInput.press("Enter");
@@ -747,116 +687,114 @@ async function verifyEulerEditor(page) {
   await rollInput.press("Enter");
   assert((await eulerFieldValue(page, "Roll")) === "45.0", "Empty Euler input reverts to the current live value.");
 
-  const firstRotation = eulerToMatrix(10, 20, 30);
-  const secondRotation = eulerToMatrix(35, 50, 65);
-  const thirdRotation = eulerToMatrix(80, 95, 110);
-  await setCoverFixtures(page, [
-    coverLayer("deep", { color: "#000000", rotation: firstRotation, selected: true }),
-    coverLayer("surface", { color: "#444444", alpha: 0.8, rotation: secondRotation, selected: true }),
-    coverLayer("still", { color: "#888888", alpha: 0.6, rotation: thirdRotation, selected: false }),
-  ]);
-  await assertEulerFieldValues(page, { Roll: "10.0", Pitch: "20.0", Yaw: "30.0" }, "Deepest selected rotatable layer drives the Euler fields.");
-
-  await rollInput.fill("80");
-  await rollInput.press("Enter");
-  const covers = (await appState(page)).covers;
-  const targetRotation = eulerToMatrix(80, 20, 30);
-  const deltaRotation = multiplyMatrices(targetRotation, transpose(firstRotation));
-  assertMatrixClose(covers[0].rotation, targetRotation, "Euler edit lands the deepest selected cover on the absolute target.");
-  assertMatrixClose(covers[1].rotation, multiplyMatrices(deltaRotation, secondRotation), "Euler edit applies the same delta to another selected cover.");
-  assertMatrixClose(covers[2].rotation, thirdRotation, "Euler edit does not move unselected covers.");
+  await page.getByRole("button", { name: "Reset rotation" }).click();
+  assertMatrixClose(await logoRotation(page), identityRotation(), "Reset returns the logo to the identity rotation.");
+  await assertEulerFieldValues(page, { Roll: "0.0", Pitch: "0.0", Yaw: "0.0" }, "Reset zeroes the readouts.");
 }
 
 async function verifyRotationGestures(page) {
   await resetApp(page);
-  await page.getByRole("button", { name: "Background" }).click();
   await dragLogo(page, { dx: 100, dy: 0 });
-  let rotations = await rotatableRotations(page);
-  let expectedRotation = modelAxisRotation({ yDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
-  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging right applies only screen y-axis rotation."));
+  assertMatrixClose(
+    await logoRotation(page),
+    modelAxisRotation({ yDegrees: 100 * DRAG_DEGREES_PER_PIXEL }),
+    "Dragging right applies only screen y-axis rotation.",
+  );
 
   await resetApp(page);
-  await page.getByRole("button", { name: "Background" }).click();
   await dragLogo(page, { dx: 0, dy: 100 });
-  rotations = await rotatableRotations(page);
-  expectedRotation = modelAxisRotation({ xDegrees: 100 * DRAG_DEGREES_PER_PIXEL });
-  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Dragging down applies only screen x-axis rotation."));
+  assertMatrixClose(
+    await logoRotation(page),
+    modelAxisRotation({ xDegrees: 100 * DRAG_DEGREES_PER_PIXEL }),
+    "Dragging down applies only screen x-axis rotation.",
+  );
 
   await resetApp(page);
-  await page.getByRole("button", { name: "Background" }).click();
   await dragLogo(page, { startOffsetY: -100, dx: 100, dy: 100, shift: true });
-  rotations = await rotatableRotations(page);
-  expectedRotation = modelAxisRotation({ zDegrees: -90 });
-  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Clockwise Shift-drag applies only screen z-axis rotation."));
+  assertMatrixClose(await logoRotation(page), modelAxisRotation({ zDegrees: -90 }), "Clockwise Shift-drag applies only screen z-axis rotation.");
 
   const preRotated = screenAxisRotation({ xDegrees: 28, yDegrees: -17, zDegrees: 42 });
-  await setAllRotations(page, preRotated);
+  await setRotation(page, preRotated);
   await dragLogo(page, { dx: 80, dy: 0 });
-  rotations = await rotatableRotations(page);
-  expectedRotation = multiplyMatrices(modelAxisRotation({ yDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated);
-  rotations.forEach((rotation) => assertMatrixClose(rotation, expectedRotation, "Horizontal drag pre-multiplies screen y-axis rotation."));
+  assertMatrixClose(
+    await logoRotation(page),
+    multiplyMatrices(modelAxisRotation({ yDegrees: 80 * DRAG_DEGREES_PER_PIXEL }), preRotated),
+    "Horizontal drag pre-multiplies screen y-axis rotation.",
+  );
+
+  // One rotation drives every layer, so the whole logo stays rigid.
+  await setAppState(page, logoState({
+    base: baseLayer({ lattice: latticeLayer() }),
+    cover: coverLayer({ lattice: latticeLayer() }),
+  }));
+  const beforeRigid = await stableCanvasStats(page);
+  await dragLogo(page, { dx: 60, dy: 40 });
+  const afterRigid = await stableCanvasStats(page);
+  assert(beforeRigid.checksum !== afterRigid.checksum, "Dragging rotates a logo carrying both lattices.");
+  const rigidState = await appState(page);
+  assert(
+    rigidState.base.lattice.rotation === undefined && rigidState.cover.lattice.rotation === undefined && rigidState.cover.rotation === undefined,
+    "Layers no longer carry their own rotation.",
+  );
 }
 
 async function verifyLatticeLayers(page, screenshotPrefix) {
   await resetApp(page);
-  await longPress(page.getByRole("button", { name: "Background" }), page);
-  await page.waitForSelector(".color-modal");
+  await openLayerModal(page, "Background");
   await capture(page, screenshotPrefix, "background-modal.png");
   let modalText = await visibleTextWithin(page, ".color-modal");
   assert(JSON.stringify(modalText) === JSON.stringify(["Color", "Alpha"]), `Background modal labels are limited to Color and Alpha. Found ${JSON.stringify(modalText)}.`);
   await page.getByRole("button", { name: "Close" }).click();
 
-  await longPress(page.getByRole("button", { name: "Base sphere" }), page);
-  await page.waitForSelector(".color-modal");
+  await openLayerModal(page, "Base sphere");
   await capture(page, screenshotPrefix, "base-modal.png");
   modalText = await visibleTextWithin(page, ".color-modal");
   assert(JSON.stringify(modalText) === JSON.stringify(["Color", "Alpha", "Lattice"]), `Base modal exposes source labels only. Found ${JSON.stringify(modalText)}.`);
   await page.getByRole("button", { name: "Close" }).click();
 
-  await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
-  await page.waitForSelector(".color-modal");
+  await openLayerModal(page, "Cover");
   await capture(page, screenshotPrefix, "cover-modal.png");
   modalText = await visibleTextWithin(page, ".color-modal");
   assert(JSON.stringify(modalText) === JSON.stringify(["Color", "Alpha", "Lattice"]), `Cover modal exposes source labels only. Found ${JSON.stringify(modalText)}.`);
-  assert((await page.getByRole("combobox", { name: "Lattice resolution" }).count()) === 0, "Source modal does not expose lattice resolution.");
+  assert((await page.getByRole("slider", { name: "Density" }).count()) === 0, "Source modal does not expose lattice density.");
   assert((await page.getByRole("slider", { name: "Line width" }).count()) === 0, "Source modal does not expose lattice line width.");
-  assert((await page.getByRole("slider", { name: "Dot size" }).count()) === 0, "Source modal does not expose lattice dot size.");
+  assert((await page.getByRole("button", { name: "Move left" }).count()) === 0, "There is no stack to reorder.");
+  assert((await page.getByRole("button", { name: "Delete cover" }).count()) === 0, "The single cover cannot be deleted.");
   await page.getByRole("checkbox", { name: "Lattice" }).check();
 
   let state = await appState(page);
-  assert(state.covers[0].lattice?.resolution === 320, "Cover lattice defaults to resolution 320.");
-  assert(state.covers[0].lattice.lineWidth === 3, "Cover lattice defaults to line width 3.");
-  assert(state.covers[0].lattice.showIntersections === false, "Cover lattice defaults to dots off.");
-  assert(state.covers[0].lattice.dotSize === 4, "Cover lattice defaults to dot size 4.");
-  assert(state.covers[0].selected === true && state.covers[0].lattice.selected === true, "Enabling cover lattice selects source and lattice.");
-  assert(JSON.stringify(state.stack) === JSON.stringify([{ kind: "cover", id: state.covers[0].id }, { kind: "coverLattice", id: state.covers[0].id }]), "Cover lattice is inserted outside its source.");
+  assert(state.cover.lattice?.frequency === 4, "Cover lattice defaults to frequency 4.");
+  assert(state.cover.lattice.lineWidth === 3, "Cover lattice defaults to line width 3.");
+  assert(state.cover.lattice.cutFill === true, "Cover lattice defaults to cutting its source fill.");
 
   const withLattice = await canvasStats(page);
   assert(withLattice.darkPixels > 1000, "Source fill remains visible after lattice creation.");
   await page.getByRole("button", { name: "Close" }).click();
   assert(
-    JSON.stringify(await layerLabels(page)) === JSON.stringify(["Background", "Base sphere", "Cover 1", "Cover 1 lattice", "Add cover"]),
-    "Layer row shows the cover lattice in stack order.",
+    JSON.stringify(await layerLabels(page)) === JSON.stringify(["Background", "Base sphere", "Cover", "Cover lattice"]),
+    "Layer row shows the cover lattice after its source.",
   );
 
-  await longPress(page.getByRole("button", { name: "Cover 1 lattice" }), page);
+  await openLayerModal(page, "Cover lattice");
   await page.waitForSelector(".lattice-modal");
   await capture(page, screenshotPrefix, "cover-lattice-modal.png");
   modalText = await visibleTextWithin(page, ".lattice-modal");
   assert(
-    modalText.every((text) => ["Color", "Alpha", "Resolution", "20", "80", "320", "1280", "5120", "Line width", "Dots", "Dot size"].includes(text)),
+    modalText.every((text) => ["Color", "Alpha", "Density", "Line width", "Outline", "Outline width", "Spin", "Roll", "Pitch", "Yaw", "Dashes", "Back edges", "Off", "Lattice", "Both", "Through", "Cut fill"].includes(text)),
     `Lattice modal text is limited to approved labels and resolution values. Found ${JSON.stringify(modalText)}.`,
   );
-  for (const label of ["Color", "Alpha", "Resolution", "Line width", "Dots", "Dot size"]) {
+  for (const label of ["Color", "Alpha", "Density", "Line width", "Outline", "Outline width", "Spin", "Dashes", "Back edges", "Off", "Lattice", "Both", "Through", "Cut fill"]) {
     assert(modalText.includes(label), `Lattice modal includes ${label}.`);
   }
   const previewBefore = await elementCanvasStats(page, ".lattice-preview-canvas");
   assert(previewBefore.nonTransparentPixels > 100, "Lattice modal preview circle renders lattice pixels.");
-  const latticeOptions = await page.getByRole("combobox", { name: "Lattice resolution" }).evaluate((select) =>
-    [...select.options].map((option) => option.textContent),
+  const densitySlider = page.getByRole("slider", { name: "Density" });
+  const densityBounds = await densitySlider.evaluate((input) => ({ min: input.min, max: input.max, step: input.step }));
+  assert(
+    densityBounds.min === "1" && densityBounds.max === "16" && densityBounds.step === "1",
+    "Density slider steps through every geodesic frequency.",
   );
-  assert(JSON.stringify(latticeOptions) === JSON.stringify(["20", "80", "320", "1280", "5120"]), "Lattice modal exposes every resolution.");
-  await page.getByRole("combobox", { name: "Lattice resolution" }).selectOption("1280");
+  await densitySlider.fill("3");
   await page.waitForTimeout(80);
   const previewAfterResolution = await elementCanvasStats(page, ".lattice-preview-canvas");
   assert(previewAfterResolution.checksum !== previewBefore.checksum, "Lattice preview changes when resolution changes.");
@@ -864,104 +802,100 @@ async function verifyLatticeLayers(page, screenshotPrefix) {
   await page.waitForTimeout(80);
   const previewAfterWidth = await elementCanvasStats(page, ".lattice-preview-canvas");
   assert(previewAfterWidth.checksum !== previewAfterResolution.checksum, "Lattice preview changes when line width changes.");
-  assert(await page.getByRole("slider", { name: "Dot size" }).isDisabled(), "Dot-size slider is disabled while intersections are off.");
-  await page.getByRole("checkbox", { name: "Intersection points" }).check();
-  await page.waitForTimeout(80);
-  const previewAfterDots = await elementCanvasStats(page, ".lattice-preview-canvas");
-  assert(previewAfterDots.checksum !== previewAfterWidth.checksum, "Lattice preview changes when dots are enabled.");
-  await page.getByRole("slider", { name: "Dot size" }).fill("7");
-  await page.waitForTimeout(80);
-  const previewAfterDotSize = await elementCanvasStats(page, ".lattice-preview-canvas");
-  assert(previewAfterDotSize.checksum !== previewAfterDots.checksum, "Lattice preview changes when dot size changes.");
   await page.locator(".color-modal input[type='color']").fill("#ff0000");
   await page.waitForTimeout(80);
   const previewAfterColor = await elementCanvasStats(page, ".lattice-preview-canvas");
-  assert(previewAfterColor.checksum !== previewAfterDotSize.checksum, "Lattice preview changes when color changes.");
+  assert(previewAfterColor.checksum !== previewAfterWidth.checksum, "Lattice preview changes when color changes.");
   await page.getByRole("slider", { name: "Alpha" }).fill("0.35");
   await page.waitForTimeout(80);
   const previewAfterAlpha = await elementCanvasStats(page, ".lattice-preview-canvas");
   assert(previewAfterAlpha.checksum !== previewAfterColor.checksum, "Lattice preview changes when alpha changes.");
   state = await appState(page);
-  assert(state.covers[0].lattice.resolution === 1280, "Lattice resolution is stored on the lattice.");
-  assert(state.covers[0].lattice.lineWidth === 6, "Lattice line width is stored on the lattice.");
-  assert(state.covers[0].lattice.showIntersections === true && state.covers[0].lattice.dotSize === 7, "Intersection settings are stored on the lattice.");
-  assert(state.covers[0].lattice.color === "#ff0000" && state.covers[0].lattice.alpha === 0.35, "Lattice color and alpha are independent.");
+  assert(state.cover.lattice.frequency === 3, "Lattice frequency is stored on the lattice.");
+  assert(state.cover.lattice.lineWidth === 6, "Lattice line width is stored on the lattice.");
+  assert(state.cover.lattice.color === "#ff0000" && state.cover.lattice.alpha === 0.35, "Lattice color and alpha are independent.");
 
   await page.getByRole("button", { name: "Close" }).click();
-  await capture(page, screenshotPrefix, "lattice-dots-on.png");
-  await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await capture(page, screenshotPrefix, "lattice-styled.png");
+  await openLayerModal(page, "Cover");
   await page.locator(".color-modal input[type='color']").fill("#00aa00");
   await page.getByRole("slider", { name: "Alpha" }).fill("0.65");
   state = await appState(page);
-  assert(state.covers[0].color === "#00aa00" && state.covers[0].alpha === 0.65, "Source color and alpha update.");
-  assert(state.covers[0].lattice.color === "#ff0000" && state.covers[0].lattice.alpha === 0.35, "Existing lattice does not inherit later source edits.");
+  assert(state.cover.color === "#00aa00" && state.cover.alpha === 0.65, "Source color and alpha update.");
+  assert(state.cover.lattice.color === "#ff0000" && state.cover.lattice.alpha === 0.35, "Existing lattice does not inherit later source edits.");
   await page.getByRole("button", { name: "Close" }).click();
 
-  const beforeIndependent = await appState(page);
-  await page.getByRole("button", { name: "Cover 1", exact: true }).click();
-  await dragLogo(page, { dx: 80, dy: 0 });
-  state = await appState(page);
-  assertMatrixClose(state.covers[0].rotation, beforeIndependent.covers[0].rotation, "Unselected source cover does not rotate when only lattice is selected.");
-  assert(maxMatrixDifference(state.covers[0].lattice.rotation, beforeIndependent.covers[0].lattice.rotation) > 0.001, "Selected lattice rotates independently from its source.");
-
-  await page.getByRole("button", { name: "Cover 1", exact: true }).click();
-  const beforeTogether = await appState(page);
-  await dragLogo(page, { dx: 0, dy: 80 });
-  state = await appState(page);
-  assert(
-    maxMatrixDifference(state.covers[0].rotation, beforeTogether.covers[0].rotation) > 0.001 &&
-      maxMatrixDifference(state.covers[0].lattice.rotation, beforeTogether.covers[0].lattice.rotation) > 0.001,
-    "Selecting source and lattice rotates both together.",
-  );
-
-  await page.getByRole("button", { name: "Add cover" }).click();
-  await longPress(page.getByRole("button", { name: "Cover 1 lattice" }), page);
-  await page.waitForSelector(".lattice-modal");
-  await page.getByRole("button", { name: "Move right" }).click();
-  state = await appState(page);
-  assert(state.stack[2].kind === "coverLattice", "Moving a lattice changes only the movable stack order.");
-  await page.getByRole("button", { name: "Close" }).click();
-  await capture(page, screenshotPrefix, "reordered-layers.png");
-  await longPress(page.getByRole("button", { name: "Cover 1 lattice" }), page);
-  await page.waitForSelector(".lattice-modal");
-  await page.getByRole("button", { name: "Move left" }).click();
-  await page.getByRole("button", { name: "Close" }).click();
-
-  await longPress(page.getByRole("button", { name: "Base sphere" }), page);
-  await page.waitForSelector(".color-modal");
-  assert(await page.getByRole("button", { name: "Move left" }).isDisabled(), "Base sphere left move is disabled.");
-  assert(await page.getByRole("button", { name: "Move right" }).isDisabled(), "Base sphere right move is disabled.");
+  await openLayerModal(page, "Base sphere");
   await page.getByRole("checkbox", { name: "Lattice" }).check();
   state = await appState(page);
-  assert(state.base.selected === true && state.base.lattice?.selected === true, "Enabling base lattice selects base and base lattice.");
+  assert(state.base.lattice?.frequency === 4, "Base lattice is created from its source modal.");
   await page.getByRole("button", { name: "Close" }).click();
-  await longPress(page.getByRole("button", { name: "Base lattice" }), page);
+  assert(
+    JSON.stringify(await layerLabels(page)) === JSON.stringify(["Background", "Base sphere", "Base lattice", "Cover", "Cover lattice"]),
+    "Layer row shows both lattices after their sources.",
+  );
+  await openLayerModal(page, "Base lattice");
   await capture(page, screenshotPrefix, "base-lattice-modal.png");
-  assert(await page.getByRole("button", { name: "Move left" }).isDisabled(), "Base lattice left move is disabled.");
-  assert(await page.getByRole("button", { name: "Move right" }).isDisabled(), "Base lattice right move is disabled.");
   await page.getByRole("button", { name: "Delete lattice" }).click();
   assert((await page.getByRole("button", { name: "Base lattice" }).count()) === 0, "Base lattice can be deleted from its modal.");
 
-  await longPress(page.getByRole("button", { name: "Cover 1 lattice" }), page);
+  await openLayerModal(page, "Cover lattice");
   await page.getByRole("button", { name: "Delete lattice" }).click();
-  assert((await page.getByRole("button", { name: "Cover 1 lattice" }).count()) === 0, "Cover lattice can be deleted from its modal.");
+  assert((await page.getByRole("button", { name: "Cover lattice" }).count()) === 0, "Cover lattice can be deleted from its modal.");
+}
+
+// A cut lattice erases its own source's fill, so the fill never tints the lines.
+// The erase must stop at that layer and leave whatever sits below it intact.
+async function verifyLatticeCutFill(page, screenshotPrefix) {
+  const cutState = (cutFill) => logoState({
+    background: backgroundLayer({ color: "#ffffff", alpha: 1 }),
+    base: baseLayer({
+      color: "#0000ff",
+      alpha: 1,
+      lattice: latticeLayer({ color: "#ff0000", alpha: 0.4, lineWidth: 8, cutFill }),
+    }),
+    cover: coverLayer({ alpha: 0 }),
+  });
+
+  await setAppState(page, cutState(false));
+  const blended = await stableCanvasStats(page);
+  await setAppState(page, cutState(true));
+  await capture(page, screenshotPrefix, "lattice-cut-fill.png");
+  const cut = await stableCanvasStats(page);
+
+  assert(cut.checksum !== blended.checksum, "Cutting the fill changes the render.");
+  assert(cut.redPixels > blended.redPixels, "Cut lines read as their own color instead of blending with the fill beneath them.");
+  assert(cut.bluePixels > 1000, "Cutting the fill leaves the negative space between the lines filled.");
+
+  // The cover's lattice may only cut the cover, never the base under it.
+  await setAppState(page, logoState({
+    background: backgroundLayer({ color: "#ff0000", alpha: 1 }),
+    base: baseLayer({ color: "#0000ff", alpha: 1 }),
+    cover: coverLayer({
+      color: "#000000",
+      alpha: 1,
+      lattice: latticeLayer({ colorMode: "normal", color: "#ffffff", alpha: 0, lineWidth: 8, cutFill: true }),
+    }),
+    rotation: eulerToMatrix(45, 0, 0),
+  }));
+  const layered = await stableCanvasStats(page);
+  assert(layered.bluePixels > 1000, "A cut cover lattice reveals the base sphere through the cut lines.");
+  assert(layered.redPixels === 0, "A cut cover lattice never punches through to the background.");
 }
 
 async function verifyKnockoutAndExport(page, screenshotPrefix) {
   await setAppState(page, logoState({
     background: backgroundLayer({ color: "#ff0000" }),
-    base: baseLayer({ color: "#0000ff", alpha: 1, selected: false }),
-    covers: [coverLayer("cover-1", { alpha: 0, selected: false })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    base: baseLayer({ color: "#0000ff", alpha: 1 }),
+    cover: coverLayer({ alpha: 0 }),
   }));
   let stats = await canvasStats(page);
   assert(stats.bluePixels > 1000, "Alpha 0 hides a layer without erasing lower layers.");
 
   await setAppState(page, logoState({
     background: backgroundLayer({ color: "#ffffff", alpha: 0 }),
-    base: baseLayer({ alpha: 0, selected: false }),
-    covers: [coverLayer("cover-1", { alpha: 0, selected: false })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    base: baseLayer({ alpha: 0 }),
+    cover: coverLayer({ alpha: 0 }),
   }));
   await capture(page, screenshotPrefix, "transparent-background-preview.png");
   stats = await canvasStats(page);
@@ -969,9 +903,8 @@ async function verifyKnockoutAndExport(page, screenshotPrefix) {
 
   await setAppState(page, logoState({
     background: backgroundLayer({ color: "#ffffff", alpha: 0.5 }),
-    base: baseLayer({ alpha: 0, selected: false }),
-    covers: [coverLayer("cover-1", { alpha: 0, selected: false })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    base: baseLayer({ alpha: 0 }),
+    cover: coverLayer({ alpha: 0 }),
   }));
   const previewAlpha = await page.locator(".logo-zone").evaluate((element) =>
     window.getComputedStyle(element, "::before").opacity,
@@ -980,9 +913,8 @@ async function verifyKnockoutAndExport(page, screenshotPrefix) {
 
   await setAppState(page, logoState({
     background: backgroundLayer({ color: "#ff0000" }),
-    base: baseLayer({ color: "#0000ff", alpha: 1, selected: false }),
-    covers: [coverLayer("cover-1", { colorMode: "knockout", color: "#000000", alpha: 1, selected: false })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    base: baseLayer({ color: "#0000ff", alpha: 1 }),
+    cover: coverLayer({ colorMode: "knockout", color: "#000000", alpha: 1 }),
   }));
   await capture(page, screenshotPrefix, "cover-knockout.png");
   stats = await canvasStats(page);
@@ -992,39 +924,38 @@ async function verifyKnockoutAndExport(page, screenshotPrefix) {
     background: backgroundLayer({ color: "#ff0000" }),
     base: baseLayer({
       color: "#0000ff",
-      lattice: latticeLayer({ colorMode: "knockout", lineWidth: 8, selected: false }),
+      lattice: latticeLayer({ colorMode: "knockout", lineWidth: 8 }),
     }),
-    covers: [coverLayer("cover-1", { alpha: 0, selected: false })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    cover: coverLayer({ alpha: 0 }),
   }));
   await capture(page, screenshotPrefix, "lattice-knockout.png");
   stats = await canvasStats(page);
   assert(stats.transparentPixels > 100 && stats.bluePixels > 1000, "Knockout lattice erases only drawn lattice geometry, not gaps.");
 
   await resetApp(page);
-  await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await openLayerModal(page, "Cover");
   await page.locator(".color-modal input[type='color']").fill("#336699");
   let state = await appState(page);
-  assert(state.covers[0].color === "#336699" && state.covers[0].colorMode === "normal", "Normal color selection stores the regular color.");
+  assert(state.cover.color === "#336699" && state.cover.colorMode === "normal", "Normal color selection stores the regular color.");
   assert((await page.locator(".color-input-shell.active").count()) === 1, "Normal color circle is highlighted in normal color mode.");
   assert((await page.locator(".transparent-color-button.active").count()) === 0, "Transparent color is not highlighted in normal color mode.");
   await page.getByRole("button", { name: "Transparent color" }).click();
   assert(await page.getByRole("slider", { name: "Alpha" }).isDisabled(), "Knockout disables the alpha slider.");
   state = await appState(page);
-  assert(state.covers[0].colorMode === "knockout" && state.covers[0].alpha === 1, "Knockout sets alpha to 1.");
-  assert(state.covers[0].color === "#336699", "Selecting knockout does not overwrite the saved regular color.");
+  assert(state.cover.colorMode === "knockout" && state.cover.alpha === 1, "Knockout sets alpha to 1.");
+  assert(state.cover.color === "#336699", "Selecting knockout does not overwrite the saved regular color.");
   assert((await page.locator(".color-input-shell.active").count()) === 0, "Normal color circle is not highlighted in knockout color mode.");
   assert((await page.locator(".transparent-color-button.active").count()) === 1, "Transparent color is highlighted in knockout color mode.");
   assert((await page.locator(".color-input-shell.knockout").count()) === 0, "Normal color circle does not adopt knockout styling.");
   await page.locator(".color-input-shell").dispatchEvent("pointerdown");
   state = await appState(page);
-  assert(state.covers[0].colorMode === "normal" && state.covers[0].color === "#336699", "Selecting the regular color circle clears knockout without changing the saved color.");
+  assert(state.cover.colorMode === "normal" && state.cover.color === "#336699", "Selecting the regular color circle clears knockout without changing the saved color.");
   assert((await page.locator(".color-input-shell.active").count()) === 1, "Normal color circle is highlighted after selecting it.");
   assert((await page.locator(".transparent-color-button.active").count()) === 0, "Selecting regular color deselects transparent color.");
   await page.getByRole("button", { name: "Transparent color" }).click();
   await page.locator(".color-modal input[type='color']").fill("#123456");
   state = await appState(page);
-  assert(state.covers[0].colorMode === "normal" && state.covers[0].alpha === 1, "Choosing a normal color leaves knockout with alpha 1.");
+  assert(state.cover.colorMode === "normal" && state.cover.alpha === 1, "Choosing a normal color leaves knockout with alpha 1.");
   assert(!(await page.getByRole("slider", { name: "Alpha" }).isDisabled()), "Normal color re-enables alpha.");
   assert((await page.locator(".transparent-color-button.active").count()) === 0, "Choosing a normal color deselects transparent color.");
   assert((await page.locator(".color-input-shell.active").count()) === 1, "Normal color circle is highlighted again after returning to normal color mode.");
@@ -1040,9 +971,8 @@ async function verifyKnockoutAndExport(page, screenshotPrefix) {
 
   const knockoutExport = await exportPngForState(page, logoState({
     background: backgroundLayer({ color: "#ff0000", alpha: 1 }),
-    base: baseLayer({ colorMode: "knockout", alpha: 1, selected: false }),
-    covers: [coverLayer("cover-1", { alpha: 0, selected: false })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    base: baseLayer({ colorMode: "knockout", alpha: 1 }),
+    cover: coverLayer({ alpha: 0 }),
   }));
   const center = rgbaAt(knockoutExport, 512, 512);
   assert(center.red > 240 && center.green < 20 && center.blue < 20 && center.alpha === 255, "Knockout layers preserve the editable background in exported PNGs.");
@@ -1062,8 +992,7 @@ async function exportCornerAlpha(page, background) {
   const png = await exportPngForState(page, logoState({
     background,
     base: baseLayer({ alpha: 0 }),
-    covers: [coverLayer("cover-1", { alpha: 0 })],
-    stack: [{ kind: "cover", id: "cover-1" }],
+    cover: coverLayer({ alpha: 0 }),
   }));
 
   return alphaAt(png, 0, 0);
@@ -1118,23 +1047,23 @@ async function runMainFlowChecks(page, screenshotPrefix) {
   await assertOpaquePanels(page);
 
   assert(
-    JSON.stringify(await visibleText(page)) === JSON.stringify(["Roll", "Pitch", "Yaw"]),
-    "Main screen text is limited to the Euler field labels.",
+    JSON.stringify(await visibleText(page)) === JSON.stringify(["Roll", "Pitch", "Yaw", "Reset"]),
+    "Main screen text is limited to the Euler labels and the reset control.",
   );
 
   const initial = await canvasStats(page);
   assert(initial.width > 0 && initial.height > 0, "Canvas has a rendered pixel buffer.");
   assert(initial.darkPixels > 1000, "Initial logo render contains visible cover pixels.");
 
-  await verifyDoublePressModal(page);
-  await verifySelectionAndBase(page);
+  await verifyLayerRow(page);
   await verifyEulerEditor(page);
   await verifyRotationGestures(page);
   await verifyLatticeLayers(page, screenshotPrefix);
+  await verifyLatticeCutFill(page, screenshotPrefix);
   await verifyKnockoutAndExport(page, screenshotPrefix);
 
   await resetApp(page);
-  await longPress(page.getByRole("button", { name: "Cover 1", exact: true }), page);
+  await openLayerModal(page, "Cover");
   const sourceModalText = await visibleTextWithin(page, ".color-modal");
   assert(
     JSON.stringify(sourceModalText) === JSON.stringify(["Color", "Alpha", "Lattice"]),

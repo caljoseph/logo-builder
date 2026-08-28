@@ -140,7 +140,8 @@ input:focus-visible {
 }
 
 .cover-swatch canvas,
-.lattice-swatch canvas {
+.lattice-swatch canvas,
+.border-swatch canvas {
   position: relative;
   z-index: 1;
   display: block;
@@ -168,20 +169,9 @@ input:focus-visible {
 }
 
 .cover-swatch.knockout canvas,
-.lattice-swatch.knockout canvas {
+.lattice-swatch.knockout canvas,
+.border-swatch.knockout canvas {
   opacity: 0.28;
-}
-
-.layer-swatch.selected::after {
-  position: absolute;
-  inset: -4px;
-  border: 2px solid #111111;
-  border-radius: inherit;
-  content: "";
-}
-
-.layer-add {
-  margin-left: 2px;
 }
 
 .logo-zone {
@@ -214,6 +204,29 @@ input:focus-visible {
   touch-action: none;
 }
 
+/* While the panel is docked at the bottom, pull the logo up and shrink it so the
+   whole ball stays clear of it and keeps updating as controls move. */
+.app-shell.editing .logo-zone {
+  align-items: start;
+}
+
+.app-shell.editing .logo-shell {
+  width: min(34vh, 46vmin, 300px);
+}
+
+/* With the panel beside the logo, the ball keeps its own space to the right. */
+@media (min-width: 760px) {
+  .app-shell.editing .logo-zone {
+    align-items: center;
+    justify-items: end;
+    padding-right: 24px;
+  }
+
+  .app-shell.editing .logo-shell {
+    width: min(calc(100vw - 400px), 70vmin, 520px);
+  }
+}
+
 .logo-canvas {
   display: block;
   width: 100%;
@@ -236,59 +249,93 @@ input:focus-visible {
 .bottom-panel {
   display: flex;
   gap: 16px;
-  align-items: end;
+  align-items: center;
   justify-content: space-between;
   min-height: 78px;
   padding: 12px max(18px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
 }
 
 .euler-controls {
-  display: flex;
+  display: grid;
+  flex: 1;
   gap: 8px;
-  align-items: end;
-  min-height: 45px;
-  max-width: calc(100vw - 106px);
+  min-width: 0;
 }
 
 .euler-field {
   display: grid;
-  gap: 4px;
-  width: 58px;
+  grid-template-columns: 42px minmax(0, 1fr) 54px;
+  gap: 10px;
+  align-items: center;
   color: var(--ink);
-  font-size: 0.64rem;
   line-height: 1;
 }
 
-.euler-field input {
+.euler-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+}
+
+.euler-slider {
   width: 100%;
-  height: 34px;
+  min-width: 0;
+  accent-color: #111111;
+}
+
+.euler-value {
+  width: 100%;
+  height: 30px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 6px;
+  padding: 0 4px;
   color: var(--ink);
   background: #ffffff;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   text-align: center;
   box-shadow: 0 8px 26px rgba(17, 17, 17, 0.06);
 }
 
-.euler-field input:disabled {
-  color: transparent;
-  background: #ffffff;
-  cursor: default;
+.bottom-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 
+.reset-button {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: #ffffff;
+  font-size: 0.74rem;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, 0.06);
+}
+
+/* Pushed to one side with no scrim, so the logo stays visible and live while
+   its own layers are being edited. Narrow screens have no room beside the ball,
+   so there the panel docks to the bottom instead. */
 .modal-layer {
   position: fixed;
   inset: 0;
   z-index: 30;
   display: grid;
-  place-items: center;
-  padding: 20px;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.58)),
-    var(--checkerboard) 0 0 / var(--checker-size);
-  backdrop-filter: blur(10px);
+  align-items: end;
+  justify-items: center;
+  padding: 12px;
+  pointer-events: none;
+}
+
+@media (min-width: 760px) {
+  .modal-layer {
+    align-items: center;
+    justify-items: start;
+    padding: 16px;
+  }
+}
+
+.modal-layer > * {
+  pointer-events: auto;
 }
 
 .tool-modal {
@@ -298,6 +345,9 @@ input:focus-visible {
   justify-items: center;
   gap: 22px;
   width: min(100%, 310px);
+  max-height: min(62vh, 620px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--soft-line);
   border-radius: 8px;
   background: #ffffff;
@@ -305,11 +355,21 @@ input:focus-visible {
 }
 
 .color-modal {
-  padding: 54px 28px 28px;
+  padding: 14px 28px 28px;
+}
+
+/* A tall lattice modal scrolls, so the close button becomes a real first row
+   and sticks to the top instead of scrolling out of reach. */
+.color-modal .modal-close {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  justify-self: end;
+  background: #ffffff;
 }
 
 .save-modal {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   padding: 58px 24px 24px;
 }
 
@@ -451,17 +511,37 @@ input:focus-visible {
 }
 
 .alpha-input,
-.line-width-input,
-.dot-size-input {
+.line-width-input {
   width: 220px;
   max-width: 100%;
   accent-color: #111111;
 }
 
 .alpha-input:disabled,
-.line-width-input:disabled,
-.dot-size-input:disabled {
+.line-width-input:disabled {
   opacity: 0.32;
+}
+
+.offset-grid {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.offset-field {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 0.64rem;
+  line-height: 1;
+}
+
+.offset-field input {
+  width: 100%;
+  min-width: 0;
+  accent-color: #111111;
 }
 
 .transparent-color-button {
@@ -561,22 +641,24 @@ input:focus-visible {
 
   .layer-row {
     gap: 10px;
-    padding-right: 66px;
   }
 
   .euler-controls {
     gap: 6px;
-    max-width: calc(100vw - 88px);
   }
 
   .euler-field {
-    width: 52px;
-    font-size: 0.58rem;
+    grid-template-columns: 36px minmax(0, 1fr) 48px;
+    gap: 8px;
   }
 
-  .euler-field input {
-    height: 32px;
-    font-size: 0.75rem;
+  .euler-label {
+    font-size: 0.62rem;
+  }
+
+  .euler-value {
+    height: 28px;
+    font-size: 0.72rem;
   }
 
   .logo-shell {
