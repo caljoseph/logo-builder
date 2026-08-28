@@ -62,8 +62,8 @@ input:focus-visible {
   position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   background: var(--checkerboard) 0 0 / var(--checker-size);
 }
@@ -180,6 +180,7 @@ input:focus-visible {
   place-items: center;
   min-height: 0;
   overflow: hidden;
+  container-type: size;
   background: var(--checkerboard) 0 0 / var(--checker-size);
   padding: 12px 14px;
 }
@@ -199,7 +200,7 @@ input:focus-visible {
 }
 
 .logo-shell {
-  width: min(82vmin, 680px);
+  width: min(100%, 100cqh, var(--logo-max, 680px));
   aspect-ratio: 1;
   touch-action: none;
 }
@@ -211,7 +212,7 @@ input:focus-visible {
 }
 
 .app-shell.editing .logo-shell {
-  width: min(34vh, 46vmin, 300px);
+  --logo-max: 300px;
 }
 
 /* With the panel beside the logo, the ball keeps its own space to the right. */
@@ -223,7 +224,7 @@ input:focus-visible {
   }
 
   .app-shell.editing .logo-shell {
-    width: min(calc(100vw - 400px), 70vmin, 520px);
+    --logo-max: min(calc(100vw - 400px), 520px);
   }
 }
 
@@ -662,6 +663,6 @@ input:focus-visible {
   }
 
   .logo-shell {
-    width: min(88vmin, 520px);
+    --logo-max: 520px;
   }
 }
